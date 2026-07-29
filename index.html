@@ -415,6 +415,33 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
       </div>
 
       <div class="card">
+        <h2>Transfer Between Accounts</h2>
+        <form id="transferForm" class="tx-form">
+          <div class="form-row">
+            <label>From Account
+              <select id="trFromAccount" required></select>
+            </label>
+            <label>To Account
+              <select id="trToAccount" required></select>
+            </label>
+            <label>Amount
+              <input type="number" id="trAmount" step="0.01" min="0" required placeholder="0.00">
+            </label>
+            <label>Date
+              <input type="date" id="trDate" required>
+            </label>
+          </div>
+          <div class="form-row">
+            <label class="grow">Description
+              <input type="text" id="trDescription" placeholder="e.g. Cash withdrawn from UBL">
+            </label>
+            <button type="submit" class="primary-btn">Add Transfer</button>
+          </div>
+        </form>
+        <p class="hint" style="margin:10px 0 0;">For moving your own money between your own accounts — e.g. withdrawing cash from a bank. Both account balances update, but a transfer never counts as income or expense, so it won't distort your Dashboard, budgets or spending chart.</p>
+      </div>
+
+      <div class="card">
         <div class="tx-filters">
           <input type="month" id="filterMonth">
           <select id="filterType">
@@ -435,6 +462,7 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
           <span id="txSelectedCount">0 selected</span>
           <select id="txBulkAccountSelect"></select>
           <button id="moveSelectedTxBtn" class="ghost-btn small">Move to Account</button>
+          <button id="markTransferTxBtn" class="ghost-btn small">Mark as Transfer</button>
           <button id="deleteSelectedTxBtn" class="ghost-btn danger small">Delete Selected</button>
         </div>
         <div class="table-wrap">
@@ -971,7 +999,7 @@ document.getElementById("dashNextMonth").addEventListener("click", () => { dashM
 
 function renderDashboard() {
   document.getElementById("dashMonthLabel").textContent = monthLabel(dashMonth);
-  const monthTx = db.transactions.filter((t) => monthKey(t.date) === dashMonth && (t.bucket || "personal") === "personal");
+  const monthTx = db.transactions.filter((t) => monthKey(t.date) === dashMonth && (t.bucket || "personal") === "personal" && !isTransferTx(t));
   const monthIncome = monthTx.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
   const monthExpense = monthTx.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0);
   const savingsRate = monthIncome > 0 ? ((monthIncome - monthExpense) / monthIncome) * 100 : 0;
@@ -1028,7 +1056,7 @@ function renderBarChart(refMonth, wrapId, bucket) {
   const months = [];
   for (let i = 5; i >= 0; i--) months.push(shiftMonth(refMonth, -i));
   const data = months.map((m) => {
-    const tx = db.transactions.filter((t) => monthKey(t.date) === m && (t.bucket || "personal") === (bucket || "personal"));
+    const tx = db.transactions.filter((t) => monthKey(t.date) === m && (t.bucket || "personal") === (bucket || "personal") && !isTransferTx(t));
     return { month: m, income: tx.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0), expense: tx.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0) };
   });
   const max = Math.max(1, ...data.map((d) => Math.max(d.income, d.expense)));
@@ -1053,7 +1081,7 @@ function renderBudgetProgress(month, containerId) {
   const wrap = document.getElementById(containerId);
   const budgets = db.budgets.filter((b) => b.month === month);
   if (budgets.length === 0) { wrap.innerHTML = `<div class="empty-state">No budgets set for this month. Go to the Budgets tab to set some.</div>`; return; }
-  const monthTx = db.transactions.filter((t) => monthKey(t.date) === month && t.type === "expense" && (t.bucket || "personal") === "personal");
+  const monthTx = db.transactions.filter((t) => monthKey(t.date) === month && t.type === "expense" && (t.bucket || "personal") === "personal" && !isTransferTx(t));
   let totalBudget = 0, totalSpent = 0;
   const rows = budgets.map((b) => {
     const cat = getCategory(b.categoryId);
@@ -1099,7 +1127,7 @@ document.getElementById("bizNextMonth").addEventListener("click", () => { bizMon
 
 function renderBusinessView() {
   document.getElementById("bizMonthLabel").textContent = monthLabel(bizMonth);
-  const monthTx = db.transactions.filter((t) => monthKey(t.date) === bizMonth && (t.bucket || "personal") === "business");
+  const monthTx = db.transactions.filter((t) => monthKey(t.date) === bizMonth && (t.bucket || "personal") === "business" && !isTransferTx(t));
   const income = monthTx.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
   const expense = monthTx.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0);
   document.getElementById("bizIncome").textContent = fmtMoney(income);
@@ -1262,6 +1290,12 @@ document.getElementById("txForm").addEventListener("submit", (e) => {
     amount: parseFloat(document.getElementById("txAmount").value),
     description: document.getElementById("txDescription").value.trim(),
   };
+  const existingTx = editId ? db.transactions.find((t) => t.id === editId) : null;
+  if (existingTx) {
+    /* Preserve system flags the form never collects — this record is rebuilt from scratch, which would otherwise silently strip them (Section 3.10). */
+    if (existingTx.transferId) record.transferId = existingTx.transferId;
+    if (existingTx.isReconciliation) record.isReconciliation = true;
+  }
   if (!record.date || !record.accountId || !record.categoryId || isNaN(record.amount) || record.amount <= 0) { alert("Please fill in date, account, category and a positive amount."); return; }
   if (editId) { const idx = db.transactions.findIndex((t) => t.id === editId); if (idx !== -1) db.transactions[idx] = record; toast("Transaction updated"); }
   else { db.transactions.push(record); toast("Transaction added"); }
@@ -1274,9 +1308,71 @@ document.getElementById("txForm").addEventListener("submit", (e) => {
   txCategorySelect.value = record.categoryId;
 });
 
+/* ================= TRANSFERS (Section 3.10) ================= */
+/* A transfer is a pair of ordinary transactions sharing one transferId: an expense leaving the
+   source account and an income arriving in the destination. Excluded from every income/expense
+   figure, but deliberately still counted in all balance and account inflow/outflow figures. */
+function isTransferTx(t) { return !!t.transferId; }
+
+function ensureTransferCategory(type, bucket) {
+  let cat = db.categories.find((c) => c.name === "Transfer" && c.type === type && (c.bucket || "personal") === bucket);
+  if (!cat) { cat = { id: uid(), name: "Transfer", type, color: "#94a3b8", isSystem: true, bucket }; db.categories.push(cat); }
+  return cat.id;
+}
+
+document.getElementById("transferForm").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const fromId = document.getElementById("trFromAccount").value;
+  const toId = document.getElementById("trToAccount").value;
+  const amount = parseFloat(document.getElementById("trAmount").value);
+  const date = document.getElementById("trDate").value;
+  const typed = document.getElementById("trDescription").value.trim();
+  if (!fromId || !toId) { alert("Pick both a From and a To account."); return; }
+  if (fromId === toId) { alert("The From and To accounts must be different — a transfer moves money between two of your accounts."); return; }
+  if (!date || isNaN(amount) || amount <= 0) { alert("Enter a date and a positive amount."); return; }
+  const bucket = transactionsLedger;
+  const from = getAccount(fromId), to = getAccount(toId);
+  const description = typed || `Transfer: ${from ? from.name : "?"} → ${to ? to.name : "?"}`;
+  const transferId = uid();
+  db.transactions.push({ id: uid(), type: "expense", date, accountId: fromId, categoryId: ensureTransferCategory("expense", bucket), amount, description, bucket, transferId });
+  db.transactions.push({ id: uid(), type: "income", date, accountId: toId, categoryId: ensureTransferCategory("income", bucket), amount, description, bucket, transferId });
+  saveData();
+  document.getElementById("trAmount").value = "";
+  document.getElementById("trDescription").value = "";
+  renderTransactionsView(); renderDashboard(); renderBusinessView(); renderAccountsView();
+  toast(`Transferred ${fmtMoney(amount)} from ${from ? from.name : "account"} to ${to ? to.name : "account"}`);
+});
+
+document.getElementById("markTransferTxBtn").addEventListener("click", () => {
+  const rows = db.transactions.filter((t) => selectedTxIds.has(t.id));
+  if (rows.length !== 2) { alert("Select exactly two transactions — the pair that makes up one transfer: the money leaving one account, and the same amount arriving in another."); return; }
+  const [a, b] = rows;
+  if (a.transferId && a.transferId === b.transferId) {
+    if (!confirm("These two are currently marked as one transfer.\n\nRemove the marking? They'll go back to counting as ordinary income and expense in your Dashboard, budgets, spending chart and Yearly Report. Account balances won't change either way.")) return;
+    delete a.transferId; delete b.transferId;
+    selectedTxIds.clear();
+    saveData(); renderTransactionsView(); renderDashboard(); renderBusinessView(); renderAccountsView();
+    toast("Transfer marking removed");
+    return;
+  }
+  if (a.transferId || b.transferId) { alert("One of the selected transactions is already part of a different transfer. Select that pair on its own first to unmark it."); return; }
+  if (a.type === b.type) { alert(`A transfer needs one income and one expense — money leaving one account and arriving in another. Both of these are ${a.type}s.`); return; }
+  if (round2(a.amount) !== round2(b.amount)) { alert(`The two amounts must match. You selected ${fmtMoney(a.amount)} and ${fmtMoney(b.amount)}.`); return; }
+  if (a.accountId === b.accountId) { alert("Both transactions are on the same account, so no money actually moved between accounts."); return; }
+  if ((a.bucket || "personal") !== (b.bucket || "personal")) { alert("Both halves must be in the same ledger (Personal or Business)."); return; }
+  const dateNote = a.date === b.date ? "" : `\n\nNote: these are dated ${a.date} and ${b.date}. They'll be left on their own dates — nothing is changed for you — but making them match keeps your balance correct on any given day.`;
+  if (!confirm(`Mark these two as one transfer of ${fmtMoney(a.amount)}?\n\nThey'll stop counting as income and expense in your Dashboard, budgets, spending chart and Yearly Report. Both account balances stay exactly as they are.${dateNote}`)) return;
+  const transferId = uid();
+  a.transferId = transferId; b.transferId = transferId;
+  selectedTxIds.clear();
+  saveData(); renderTransactionsView(); renderDashboard(); renderBusinessView(); renderAccountsView();
+  toast("Marked as transfer");
+});
+
 function editTransaction(id) {
   const t = db.transactions.find((t) => t.id === id);
   if (!t) return;
+  if (t.transferId) { alert("This is one half of a transfer, so it can't be edited on its own — changing one side's amount or account would leave the pair mismatched and an account balance wrong.\n\nDelete it instead (both halves go together) and re-enter it using the \"Transfer Between Accounts\" form."); return; }
   txTypeSelect.value = t.type;
   populateAccountSelect(txAccountSelect, false, transactionsLedger);
   populateCategorySelect(txCategorySelect, t.type, false, transactionsLedger);
@@ -1289,6 +1385,22 @@ function editTransaction(id) {
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 function deleteTransaction(id) {
+  const tx = db.transactions.find((t) => t.id === id);
+  if (!tx) return;
+  if (tx.transferId) {
+    /* Both halves always go together — an orphaned half silently corrupts an account balance (Section 4 rule 6). */
+    const other = db.transactions.find((t) => t.transferId === tx.transferId && t.id !== id);
+    const otherAcc = other ? getAccount(other.accountId) : null;
+    if (!confirm(other
+      ? `This is one half of a transfer. Deleting it will also delete the matching entry on "${otherAcc ? otherAcc.name : "the other account"}", otherwise that account's balance would be left wrong.\n\nDelete both halves?`
+      : "Delete this transaction?")) return;
+    db.transactions = db.transactions.filter((t) => t.transferId !== tx.transferId);
+    selectedTxIds.delete(id);
+    if (other) selectedTxIds.delete(other.id);
+    saveData(); renderTransactionsView(); renderDashboard(); renderBusinessView(); renderAccountsView();
+    toast(other ? "Transfer deleted (both halves)" : "Transaction deleted");
+    return;
+  }
   if (!confirm("Delete this transaction?")) return;
   db.transactions = db.transactions.filter((t) => t.id !== id);
   selectedTxIds.delete(id);
@@ -1307,6 +1419,15 @@ function renderTransactionsView() {
   populateCategorySelect(document.getElementById("filterCategory"), "", true, transactionsLedger);
   populateAccountSelect(document.getElementById("filterAccount"), true, transactionsLedger);
   populateAccountSelect(document.getElementById("txBulkAccountSelect"), false, transactionsLedger);
+  /* Transfer form: repopulating wipes the selection, so restore it — and default To to a different account than From. */
+  const trFrom = document.getElementById("trFromAccount"), trTo = document.getElementById("trToAccount");
+  const prevFrom = trFrom.value, prevTo = trTo.value;
+  populateAccountSelect(trFrom, false, transactionsLedger);
+  populateAccountSelect(trTo, false, transactionsLedger);
+  if (prevFrom) trFrom.value = prevFrom;
+  if (prevTo) trTo.value = prevTo;
+  else if (trTo.options.length > 1 && trTo.value === trFrom.value) trTo.selectedIndex = 1;
+  if (!document.getElementById("trDate").value) document.getElementById("trDate").value = todayISO();
   if (!document.getElementById("txDate").value) document.getElementById("txDate").value = todayISO();
   renderTransactionsTable();
 }
@@ -1344,11 +1465,16 @@ document.getElementById("selectAllTx").addEventListener("change", (e) => {
 document.getElementById("deleteSelectedTxBtn").addEventListener("click", () => {
   const count = selectedTxIds.size;
   if (count === 0) return;
-  if (!confirm(`Delete ${count} selected transaction${count > 1 ? "s" : ""}? This cannot be undone.`)) return;
-  db.transactions = db.transactions.filter((t) => !selectedTxIds.has(t.id));
+  /* Pull in the partner half of any selected transfer — deleting one side alone would corrupt a balance (Section 4 rule 6). */
+  const pairIds = new Set(db.transactions.filter((t) => selectedTxIds.has(t.id) && t.transferId).map((t) => t.transferId));
+  const partners = db.transactions.filter((t) => t.transferId && pairIds.has(t.transferId) && !selectedTxIds.has(t.id));
+  const note = partners.length ? `\n\n${partners.length === 1 ? "1 matching transfer half will" : partners.length + " matching transfer halves will"} also be deleted, so no account balance is left wrong.` : "";
+  if (!confirm(`Delete ${count} selected transaction${count > 1 ? "s" : ""}? This cannot be undone.${note}`)) return;
+  const removeIds = new Set([...selectedTxIds, ...partners.map((t) => t.id)]);
+  db.transactions = db.transactions.filter((t) => !removeIds.has(t.id));
   selectedTxIds.clear();
-  saveData(); renderTransactionsView(); renderDashboard();
-  toast(`Deleted ${count} transaction${count > 1 ? "s" : ""}`);
+  saveData(); renderTransactionsView(); renderDashboard(); renderBusinessView(); renderAccountsView();
+  toast(`Deleted ${removeIds.size} transaction${removeIds.size > 1 ? "s" : ""}`);
 });
 
 document.getElementById("moveSelectedTxBtn").addEventListener("click", () => {
@@ -1386,7 +1512,7 @@ function renderTransactionsTable() {
   if (rows.length === 0) { tbody.innerHTML = `<tr><td colspan="7" class="empty-state">No transactions match your filters.</td></tr>`; updateTxBulkBar(); return; }
   tbody.innerHTML = rows.map((t) => {
     const cat = getCategory(t.categoryId), acc = getAccount(t.accountId);
-    return `<tr><td><input type="checkbox" class="row-check" data-id="${t.id}" ${selectedTxIds.has(t.id) ? "checked" : ""} onchange="toggleTxSelect('${t.id}', this.checked)"></td><td>${t.date}</td><td>${acc ? acc.name : "—"}</td><td><span class="cat-badge"><span class="cat-dot" style="background:${cat ? cat.color : "#999"}"></span>${categoryDisplayName(cat)}</span></td><td>${t.description || ""}</td><td class="amount ${t.type}">${t.type === "income" ? "+" : "-"}${fmtMoney(t.amount)}</td><td class="row-actions"><button class="icon-link" onclick="editTransaction('${t.id}')">Edit</button><button class="icon-link danger" onclick="deleteTransaction('${t.id}')">Delete</button></td></tr>`;
+    return `<tr><td><input type="checkbox" class="row-check" data-id="${t.id}" ${selectedTxIds.has(t.id) ? "checked" : ""} onchange="toggleTxSelect('${t.id}', this.checked)"></td><td>${t.date}</td><td>${acc ? acc.name : "—"}</td><td><span class="cat-badge"><span class="cat-dot" style="background:${cat ? cat.color : "#999"}"></span>${categoryDisplayName(cat)}</span></td><td>${t.transferId ? `<span title="Transfer between your own accounts — not counted as income or expense" style="font-size:11px;color:var(--text-muted);border:1px solid var(--border);border-radius:4px;padding:1px 5px;margin-right:6px;white-space:nowrap;">⇄ Transfer</span>` : ""}${t.description || ""}</td><td class="amount ${t.type}">${t.type === "income" ? "+" : "-"}${fmtMoney(t.amount)}</td><td class="row-actions"><button class="icon-link" onclick="editTransaction('${t.id}')">Edit</button><button class="icon-link danger" onclick="deleteTransaction('${t.id}')">Delete</button></td></tr>`;
   }).join("");
   updateTxBulkBar();
 }
@@ -1399,7 +1525,7 @@ function renderBudgetsView() {
   document.getElementById("budgetMonthLabel").textContent = monthLabel(budgetMonth);
   const wrap = document.getElementById("budgetListWrap");
   const expenseCats = getOrderedCategoriesFlat("expense", "personal");
-  const monthTx = db.transactions.filter((t) => monthKey(t.date) === budgetMonth && t.type === "expense" && (t.bucket || "personal") === "personal");
+  const monthTx = db.transactions.filter((t) => monthKey(t.date) === budgetMonth && t.type === "expense" && (t.bucket || "personal") === "personal" && !isTransferTx(t));
   let totalBudget = 0, totalSpent = 0;
   const rows = expenseCats.map((cat) => {
     const budget = db.budgets.find((b) => b.categoryId === cat.id && b.month === budgetMonth);
@@ -1481,7 +1607,7 @@ document.getElementById("fyNext").addEventListener("click", () => { fyStartMonth
 function renderYearlyView() {
   document.getElementById("fyLabel").textContent = fiscalYearLabel(fyStartMonth);
   const fyMonths = new Set(fiscalYearMonths(fyStartMonth));
-  const fyTx = db.transactions.filter((t) => fyMonths.has(monthKey(t.date)) && (t.bucket || "personal") === "personal");
+  const fyTx = db.transactions.filter((t) => fyMonths.has(monthKey(t.date)) && (t.bucket || "personal") === "personal" && !isTransferTx(t));
 
   const income = fyTx.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
   const expense = fyTx.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0);
@@ -1529,7 +1655,7 @@ function renderFyBar() {
   const wrap = document.getElementById("fyBarWrap");
   const months = fiscalYearMonths(fyStartMonth);
   const data = months.map((m) => {
-    const tx = db.transactions.filter((t) => monthKey(t.date) === m && (t.bucket || "personal") === "personal");
+    const tx = db.transactions.filter((t) => monthKey(t.date) === m && (t.bucket || "personal") === "personal" && !isTransferTx(t));
     return { month: m, income: tx.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0), expense: tx.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0) };
   });
   const max = Math.max(1, ...data.map((d) => Math.max(d.income, d.expense)));
@@ -1556,7 +1682,7 @@ function renderFyBudgets(fyMonths) {
   const fyBudgets = db.budgets.filter((b) => fyMonths.has(b.month));
   const catIdsWithBudget = new Set(fyBudgets.map((b) => b.categoryId));
   if (catIdsWithBudget.size === 0) { wrap.innerHTML = `<div class="empty-state">No budgets set for any month in this fiscal year.</div>`; return; }
-  const fyExpenseTx = db.transactions.filter((t) => t.type === "expense" && fyMonths.has(monthKey(t.date)) && (t.bucket || "personal") === "personal");
+  const fyExpenseTx = db.transactions.filter((t) => t.type === "expense" && fyMonths.has(monthKey(t.date)) && (t.bucket || "personal") === "personal" && !isTransferTx(t));
   let totalBudget = 0, totalSpent = 0;
   const rows = expenseCats.filter((c) => catIdsWithBudget.has(c.id)).map((cat) => {
     const budgetTotal = fyBudgets.filter((b) => b.categoryId === cat.id).reduce((s, b) => s + b.amount, 0);
@@ -1781,7 +1907,7 @@ function renderCategoriesView() {
 const SHEET_TABS = {
   Categories: ["id", "name", "type", "color", "parentId", "order", "bucket"],
   Accounts: ["id", "name", "type", "openingBalance", "openingDate", "color", "bucket"],
-  Transactions: ["id", "type", "date", "accountId", "categoryId", "amount", "description", "isReconciliation", "bucket"],
+  Transactions: ["id", "type", "date", "accountId", "categoryId", "amount", "description", "isReconciliation", "bucket", "transferId"],
   Budgets: ["id", "categoryId", "month", "amount"],
   Reconciliations: ["id", "accountId", "date", "actualBalance", "computedBefore", "diff"],
   Settings: ["key", "value"],
@@ -1878,7 +2004,7 @@ async function readAllFromSheet() {
 function coerceTypesFromSheet(raw) {
   const categories = raw.Categories.filter((r) => r.id).map((r) => ({ id: r.id, name: r.name, type: r.type, color: r.color, parentId: r.parentId ? r.parentId : null, order: r.order !== "" && r.order !== undefined && r.order !== null ? Number(r.order) : undefined, bucket: r.bucket || "personal" }));
   const accounts = raw.Accounts.filter((r) => r.id).map((r) => ({ id: r.id, name: r.name, type: r.type, openingBalance: parseFloat(r.openingBalance) || 0, openingDate: r.openingDate, color: r.color, bucket: r.bucket || "personal" }));
-  const transactions = raw.Transactions.filter((r) => r.id).map((r) => ({ id: r.id, type: r.type, date: r.date, accountId: r.accountId, categoryId: r.categoryId, amount: parseFloat(r.amount) || 0, description: r.description || "", isReconciliation: String(r.isReconciliation).toUpperCase() === "TRUE", bucket: r.bucket || "personal" }));
+  const transactions = raw.Transactions.filter((r) => r.id).map((r) => ({ id: r.id, type: r.type, date: r.date, accountId: r.accountId, categoryId: r.categoryId, amount: parseFloat(r.amount) || 0, description: r.description || "", isReconciliation: String(r.isReconciliation).toUpperCase() === "TRUE", bucket: r.bucket || "personal", transferId: r.transferId ? String(r.transferId) : "" }));
   const budgets = raw.Budgets.filter((r) => r.id).map((r) => ({ id: r.id, categoryId: r.categoryId, month: r.month, amount: parseFloat(r.amount) || 0 }));
   const reconciliations = raw.Reconciliations.filter((r) => r.id).map((r) => ({ id: r.id, accountId: r.accountId, date: r.date, actualBalance: parseFloat(r.actualBalance) || 0, computedBefore: parseFloat(r.computedBefore) || 0, diff: parseFloat(r.diff) || 0 }));
   const settingsRow = raw.Settings.find((r) => r.key === "currency");

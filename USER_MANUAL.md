@@ -67,6 +67,39 @@ The toggle stays where you leave it, so if you're entering several business tran
 
 ---
 
+## 4a. Moving Money Between Your Own Accounts (Transfers)
+
+When you take cash out of your bank, or move money from one account to another, that is **not** income and **not** an expense — it's the same money in a different place. Use the **Transfer Between Accounts** form on the Transactions tab for this:
+
+1. **From Account** — where the money is leaving (e.g. UBL).
+2. **To Account** — where it's going (e.g. Cash).
+3. Enter the **Amount** and the **Date**, and a description if you like.
+4. Click **Add Transfer**.
+
+Both account balances update straight away — UBL goes down, Cash goes up — but the transfer is **not** counted as income or expense anywhere. Your Dashboard's Income, Expenses and Savings Rate stay honest, it doesn't appear as spending in your Spending by Category chart, and it doesn't eat into any budget.
+
+**Why this matters:** if you record a withdrawal the old way — an expense from the bank and an income into Cash — the app has no way to know they're the same money, so your Income *and* your Expenses both get inflated by that amount. Your balances would still be right, but the Dashboard would tell you you earned more than you did.
+
+Transfers show in your transaction list with a small **⇄ Transfer** tag, so you can always see them.
+
+### Fixing withdrawals you already entered the old way
+
+If you've been entering these by hand as two separate entries, you don't need to delete and redo them:
+
+1. On the Transactions tab, tick the checkbox on **both** entries — the one leaving the first account, and the matching one arriving in the second.
+2. Click **Mark as Transfer** in the bar that appears.
+
+That's it. Those two entries stop counting as income and expense — in that month and in your Yearly Report — while both account balances stay exactly as they are. It works for any month, however long ago. If you ever mark the wrong pair, select the same two again and the button offers to undo it.
+
+The app will refuse if the two don't make sense as a transfer — if they're not one income and one expense, if the amounts don't match, or if they're both on the same account — and it will tell you which.
+
+**A few things to know:**
+- Deleting one half of a transfer deletes both. This is on purpose: leaving one half behind would make one of your account balances wrong.
+- You can't edit one half on its own for the same reason. Delete it and re-enter it with the Transfer form.
+- Transfers work within Personal, and within Business, but not between the two — those ledgers are kept completely separate by design.
+
+---
+
 ## 5. Fixing Mistakes
 
 ### Editing one transaction
@@ -189,6 +222,9 @@ This is now fixed — picking a main category shows all entries under its subcat
 
 **"I want a budget on 'Food' to also count spending on 'Groceries' (a subcategory of Food)."**
 It already does — no extra setup needed (Section 6).
+
+**"I took cash out of my bank and now my Income looks higher than what I actually earned."**
+That's what the Transfer form is for (Section 4a). Use **Mark as Transfer** on the two entries you already made to fix it, including for past months.
 
 **"How do I stop my business entries from mixing with my personal ones?"**
 They never do — the app keeps them fully separate by design, as long as you use the Personal/Business toggle correctly when adding things.
