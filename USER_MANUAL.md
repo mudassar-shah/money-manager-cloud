@@ -8,7 +8,7 @@ A simple guide to using the app. No technical knowledge needed. (If you're looki
 
 | Version | Where it lives | When to use it |
 |---|---|---|
-| **Cloud** | A website (Netlify link) | Use this if you want your data to sync between your PC and phone, or if you want to access it from any browser. Needs a one-time Google sign-in setup to sync. |
+| **Cloud** | **<https://mudassar-shah.github.io/money-manager-cloud/>** | Use this if you want your data to sync between your PC and phone, or if you want to access it from any browser. Needs a one-time Google sign-in setup to sync. |
 | **PC** | A folder of files on your computer | Use this if you only ever use one computer and don't need syncing. Works fully offline. |
 | **iPhone** | A single file you open in Safari | Use this on your phone. Does not sync with the other versions on its own — see Section 11 for moving data between versions. |
 
@@ -21,7 +21,7 @@ All three look and work the same way. The instructions below apply to all of the
 The Cloud version (and the standalone iPhone file) can be "installed" so it behaves like a real app — its own icon, opens full-screen with no browser bar, and keeps working even with no internet connection. This isn't through the App Store or Play Store; it's a built-in browser feature.
 
 **On iPhone (Safari):**
-1. Open the site in Safari (not Chrome — this only works in Safari on iPhone).
+1. Open <https://mudassar-shah.github.io/money-manager-cloud/> in Safari (not Chrome — this only works in Safari on iPhone).
 2. Tap the **Share** button (the square with an arrow pointing up).
 3. Scroll down and tap **Add to Home Screen**.
 4. Tap **Add**.
@@ -225,6 +225,13 @@ It already does — no extra setup needed (Section 6).
 
 **"I took cash out of my bank and now my Income looks higher than what I actually earned."**
 That's what the Transfer form is for (Section 4a). Use **Mark as Transfer** on the two entries you already made to fix it, including for past months.
+
+**"Why did the Dashboard open on last month instead of this month?"**
+This was a bug, fixed on 1 August 2026. The app was reading a world clock (UTC) instead of your own device's clock, so in Pakistan it thought the new month hadn't started yet until 5am. It now always uses the date your device shows — Pakistan, UK, US, anywhere — and follows your device automatically if you travel. There's no setting to change; it just works.
+
+The same bug also meant a transaction you entered between midnight and 5am was dated to the *previous* day, which could file it under the wrong month. That's fixed too. If you entered anything in the early hours before this fix, it's worth checking those dates are right.
+
+One thing to know: if you leave the app open overnight on the last day of a month, it keeps showing the old month until you close and reopen it. That's normal — a reload fixes it.
 
 **"How do I stop my business entries from mixing with my personal ones?"**
 They never do — the app keeps them fully separate by design, as long as you use the Personal/Business toggle correctly when adding things.

@@ -2,6 +2,8 @@
 
 This is a full backup/recap of a long working session on the Money Manager app, written so it can be pasted into a fresh Claude conversation later if a bug shows up and there's no chat history to refer back to. It explains what exists, what was fixed, why, and what's still open.
 
+> **Superseded on 2026-07-30 — hosting only.** This document is a historical record and its Netlify references (the `peppy-lily-416823.netlify.app` URL in Section 1, and the deploy notes in Section 7) are no longer current. The Cloud copy now lives at **<https://mudassar-shah.github.io/money-manager-cloud/>** on GitHub Pages, and deploying means uploading/pushing to the `mudassar-shah/money-manager-cloud` repo rather than dragging a folder. Everything else here — the bugs, the fixes, the reasoning, the three-copies structure — is still accurate. See `DOCUMENTATION.md` Section 1.1 for the current hosting setup. The paths in Section 1 are also under `D:\`, not the `E:\Claude\…` shown in older docs.
+
 **If you're starting a new chat with a bug report**: paste this file plus `DOCUMENTATION.md` (technical reference, kept up to date with every change — has the authoritative field lists, formulas, and Change Log) and `USER_MANUAL.md` (plain-language how-to guide). Those two files are the living source of truth; this document is the narrative of how they got that way.
 
 ---

@@ -766,7 +766,9 @@ const DEFAULT_BUSINESS_CATEGORIES = [
 ];
 
 function uid() { return (crypto.randomUUID ? crypto.randomUUID() : "id-" + Date.now() + "-" + Math.random().toString(36).slice(2)); }
-function todayISO() { return new Date().toISOString().slice(0, 10); }
+/* Local date, never UTC — toISOString() reports a different calendar day for part of every day
+   (midnight–5am in Pakistan), which silently filed transactions into the wrong month. Section 3.9a. */
+function todayISO() { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; }
 function monthKey(dateStr) { return dateStr.slice(0, 7); }
 function monthLabel(key) { const [y, m] = key.split("-").map(Number); return new Date(y, m - 1, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" }); }
 function shiftMonth(key, delta) { const [y, m] = key.split("-").map(Number); const d = new Date(y, m - 1 + delta, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; }
