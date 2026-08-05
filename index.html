@@ -125,6 +125,8 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
 .tx-form input, .tx-form select { min-width: 140px; }
 .tx-filters { display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
 .tx-filters input, .tx-filters select { padding: 8px 10px; }
+.cat-search { font-weight: 400; }
+.cat-hint { font-size: 11px; font-weight: 400; color: var(--text-muted); }
 #filterSearch { flex: 1; min-width: 180px; }
 .table-wrap { overflow-x: auto; }
 .checkbox-col { width: 34px; }
@@ -400,7 +402,9 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
               <select id="txAccount" required></select>
             </label>
             <label>Category
+              <input type="text" id="txCategorySearch" class="cat-search" placeholder="Type to filter…" autocomplete="off">
               <select id="txCategory" required></select>
+              <span class="cat-hint" id="txCategoryHint"></span>
             </label>
             <label>Amount
               <input type="number" id="txAmount" step="0.01" min="0" required placeholder="0.00">
@@ -454,6 +458,7 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
           <select id="filterAccount">
             <option value="">All Accounts</option>
           </select>
+          <input type="text" id="filterCategorySearch" class="cat-search" placeholder="Filter categories…" autocomplete="off">
           <select id="filterCategory">
             <option value="">All Categories</option>
           </select>
@@ -1249,20 +1254,47 @@ function renderAccountsView() {
 }
 
 /* ================= TRANSACTIONS ================= */
-function buildCategoryOptionsHtml(type, bucket) {
+function buildCategoryOptionsHtml(type, bucket, query) {
+  const q = (query || "").trim().toLowerCase();
+  const hit = (name) => (name || "").toLowerCase().includes(q);
   const cats = db.categories.filter((c) => (!type || c.type === type) && (!bucket || c.bucket === bucket));
   const topLevel = sortCats(cats.filter((c) => !c.parentId));
   return topLevel.map((top) => {
     const subs = sortCats(cats.filter((c) => c.parentId === top.id));
-    if (subs.length === 0) return `<option value="${top.id}">${top.name}</option>`;
-    const subOptions = subs.map((s) => `<option value="${s.id}">${s.name}</option>`).join("");
-    return `<optgroup label="${top.name}"><option value="${top.id}">${top.name} (General)</option>${subOptions}</optgroup>`;
+    const topMatches = !q || hit(top.name);
+    if (subs.length === 0) return topMatches ? `<option value="${top.id}">${top.name}</option>` : "";
+    /* A parent match keeps its whole group — same rollup idea as the Budget/Category filter (Section 3.5). */
+    const shownSubs = topMatches ? subs : subs.filter((s) => hit(s.name));
+    if (!topMatches && shownSubs.length === 0) return "";
+    const parentOption = topMatches ? `<option value="${top.id}">${top.name} (General)</option>` : "";
+    const subOptions = shownSubs.map((s) => `<option value="${s.id}">${s.name}</option>`).join("");
+    return `<optgroup label="${top.name}">${parentOption}${subOptions}</optgroup>`;
   }).join("");
 }
-function populateCategorySelect(selectEl, type, includeAll, bucket) {
+function populateCategorySelect(selectEl, type, includeAll, bucket, query) {
   let html = includeAll ? `<option value="">All Categories</option>` : "";
-  html += buildCategoryOptionsHtml(type, bucket);
+  html += buildCategoryOptionsHtml(type, bucket, query);
   selectEl.innerHTML = html;
+}
+/* Type-to-filter for the two category dropdowns (Section 2.3). Only which options the <select>
+   contains changes — the element and its .value semantics are untouched, so all six existing
+   readers/writers of txCategory.value keep working without modification. */
+function applyCategorySearch(selectEl, searchEl, hintEl, type, includeAll, bucket) {
+  const previous = selectEl.value;
+  const total = db.categories.filter((c) => (!type || c.type === type) && (!bucket || c.bucket === bucket)).length;
+  populateCategorySelect(selectEl, type, includeAll, bucket, searchEl.value);
+  const options = Array.from(selectEl.options).filter((o) => o.value);
+  if (options.some((o) => o.value === previous)) selectEl.value = previous;
+  else if (options.length === 1) selectEl.value = options[0].value;
+  else if (includeAll) selectEl.value = "";
+  if (hintEl) {
+    const q = searchEl.value.trim();
+    hintEl.textContent = !q ? "" : options.length === 0 ? "No category matches" : `${options.length} of ${total} categories`;
+  }
+}
+function clearCategorySearch(searchEl, hintEl) {
+  if (searchEl) searchEl.value = "";
+  if (hintEl) hintEl.textContent = "";
 }
 function populateAccountSelect(selectEl, includeAll, bucket) {
   let html = includeAll ? `<option value="">All Accounts</option>` : "";
@@ -1273,7 +1305,18 @@ const txTypeSelect = document.getElementById("txType");
 const txCategorySelect = document.getElementById("txCategory");
 const txAccountSelect = document.getElementById("txAccount");
 let transactionsLedger = "personal";
-txTypeSelect.addEventListener("change", () => populateCategorySelect(txCategorySelect, txTypeSelect.value, false, transactionsLedger));
+const txCategorySearch = document.getElementById("txCategorySearch");
+const txCategoryHint = document.getElementById("txCategoryHint");
+const filterCategorySelect = document.getElementById("filterCategory");
+const filterCategorySearch = document.getElementById("filterCategorySearch");
+/* Re-apply the active filter against the new type's categories rather than dropping it. */
+txTypeSelect.addEventListener("change", () => applyCategorySearch(txCategorySelect, txCategorySearch, txCategoryHint, txTypeSelect.value, false, transactionsLedger));
+txCategorySearch.addEventListener("input", () => applyCategorySearch(txCategorySelect, txCategorySearch, txCategoryHint, txTypeSelect.value, false, transactionsLedger));
+filterCategorySearch.addEventListener("input", () => {
+  applyCategorySearch(filterCategorySelect, filterCategorySearch, null, "", true, transactionsLedger);
+  /* Setting .value in code fires no input event, so the table re-render must be explicit. */
+  renderTransactionsTable();
+});
 
 function setTransactionsLedger(bucket) {
   transactionsLedger = bucket;
@@ -1281,6 +1324,9 @@ function setTransactionsLedger(bucket) {
   document.getElementById("txForm").reset();
   document.getElementById("txEditId").value = "";
   document.getElementById("txDate").value = todayISO();
+  /* form.reset() clears the search input itself, but not the hint span or the filter-row box. */
+  clearCategorySearch(txCategorySearch, txCategoryHint);
+  clearCategorySearch(filterCategorySearch, null);
   renderTransactionsView();
 }
 
@@ -1307,6 +1353,9 @@ document.getElementById("txForm").addEventListener("submit", (e) => {
   document.getElementById("txAmount").value = "";
   document.getElementById("txDescription").value = "";
   document.getElementById("txEditId").value = "";
+  /* Clear the category filter BEFORE re-rendering, so the repopulation below is unfiltered and the
+     sticky category can be restored from the full list (Section 2.3). Order matters here. */
+  clearCategorySearch(txCategorySearch, txCategoryHint);
   renderTransactionsView(); renderDashboard(); renderBusinessView();
   txAccountSelect.value = record.accountId;
   txCategorySelect.value = record.categoryId;
@@ -1379,6 +1428,8 @@ function editTransaction(id) {
   if (t.transferId) { alert("This is one half of a transfer, so it can't be edited on its own — changing one side's amount or account would leave the pair mismatched and an account balance wrong.\n\nDelete it instead (both halves go together) and re-enter it using the \"Transfer Between Accounts\" form."); return; }
   txTypeSelect.value = t.type;
   populateAccountSelect(txAccountSelect, false, transactionsLedger);
+  /* Clear any active filter — it could otherwise hide the very category being edited. */
+  clearCategorySearch(txCategorySearch, txCategoryHint);
   populateCategorySelect(txCategorySelect, t.type, false, transactionsLedger);
   document.getElementById("txDate").value = t.date;
   txAccountSelect.value = t.accountId;
@@ -1415,12 +1466,15 @@ function deleteTransaction(id) {
 document.getElementById("clearFilters").addEventListener("click", () => {
   document.getElementById("filterMonth").value = ""; document.getElementById("filterType").value = "";
   document.getElementById("filterAccount").value = ""; document.getElementById("filterCategory").value = "";
-  document.getElementById("filterSearch").value = ""; renderTransactionsTable();
+  document.getElementById("filterSearch").value = "";
+  clearCategorySearch(filterCategorySearch, null);
+  populateCategorySelect(filterCategorySelect, "", true, transactionsLedger, "");
+  renderTransactionsTable();
 });
 function renderTransactionsView() {
   populateAccountSelect(txAccountSelect, false, transactionsLedger);
-  populateCategorySelect(txCategorySelect, txTypeSelect.value, false, transactionsLedger);
-  populateCategorySelect(document.getElementById("filterCategory"), "", true, transactionsLedger);
+  populateCategorySelect(txCategorySelect, txTypeSelect.value, false, transactionsLedger, txCategorySearch.value);
+  populateCategorySelect(filterCategorySelect, "", true, transactionsLedger, filterCategorySearch.value);
   populateAccountSelect(document.getElementById("filterAccount"), true, transactionsLedger);
   populateAccountSelect(document.getElementById("txBulkAccountSelect"), false, transactionsLedger);
   /* Transfer form: repopulating wipes the selection, so restore it — and default To to a different account than From. */

@@ -226,6 +226,15 @@ It already does — no extra setup needed (Section 6).
 **"I took cash out of my bank and now my Income looks higher than what I actually earned."**
 That's what the Transfer form is for (Section 4a). Use **Mark as Transfer** on the two entries you already made to fix it, including for past months.
 
+**"I have too many categories — do I have to scroll the whole list every time?"**
+No. There's a small **Type to filter** box just above the Category dropdown on the Transactions tab. Type a few letters and the list shrinks to what matches. Typing `groc` narrows it to "Grocery" and picks it for you, so you can go straight to the amount.
+
+Typing a main category name like `transport` shows Transport *and* everything under it. Typing `fuel` jumps straight to that one subcategory. The small grey text tells you how many matched.
+
+There's the same box next to the **Category filter** further down the page, for finding past entries. It clears itself after you save a transaction, and the **Clear** button resets the filter one.
+
+This works for Business too — it's the same form, just with the Personal/Business toggle switched over.
+
 **"Why did the Dashboard open on last month instead of this month?"**
 This was a bug, fixed on 1 August 2026. The app was reading a world clock (UTC) instead of your own device's clock, so in Pakistan it thought the new month hadn't started yet until 5am. It now always uses the date your device shows — Pakistan, UK, US, anywhere — and follows your device automatically if you travel. There's no setting to change; it just works.
 
