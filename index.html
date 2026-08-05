@@ -82,8 +82,10 @@ body { margin: 0; font-family: -apple-system, "Segoe UI", system-ui, Roboto, Ari
   .sidebar { width: 100%; }
   .main { padding: 20px 16px; max-width: 100%; }
   .stat-cards { grid-template-columns: repeat(2, 1fr); }
-  .grid-2 { grid-template-columns: 1fr; }
-  .grid-3 { grid-template-columns: 1fr; }
+  /* minmax(0, …) not a bare 1fr — a bare `1fr` track cannot shrink below its content's
+     min-content width, which let the chart cards burst the page open sideways on phones. */
+  .grid-2 { grid-template-columns: minmax(0, 1fr); }
+  .grid-3 { grid-template-columns: minmax(0, 1fr); }
 }
 .mobile-topbar { display: none; }
 .sidebar-backdrop { display: none; }
@@ -110,7 +112,7 @@ body { margin: 0; font-family: -apple-system, "Segoe UI", system-ui, Roboto, Ari
   .main { width: 100%; padding: 16px; padding-top: 12px; }
 }
 @media (max-width: 480px) {
-  .stat-cards { grid-template-columns: 1fr; }
+  .stat-cards { grid-template-columns: minmax(0, 1fr); }
 }
 .form-row { display: flex; gap: 14px; margin-bottom: 12px; flex-wrap: wrap; align-items: end; }
 .form-row label { display: flex; flex-direction: column; font-size: 12px; color: var(--text-muted); gap: 4px; font-weight: 600; }
@@ -163,7 +165,7 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
 .budget-row-top .budget-amounts { color: var(--text-muted); flex-shrink: 0; white-space: nowrap; }
 .progress-track { height: 8px; background: var(--bg); border-radius: 6px; overflow: hidden; }
 .progress-fill { height: 100%; border-radius: 6px; }
-.budget-list-item { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.budget-list-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); }
 .budget-list-item:last-child { border-bottom: none; }
 .budget-list-item input { width: 110px; text-align: right; }
 .recent-tx-wrap .tx-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
