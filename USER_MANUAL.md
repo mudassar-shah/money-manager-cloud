@@ -171,6 +171,58 @@ If you run a side business (like reselling IPTV), the **Business** tab tracks it
 
 ---
 
+## 9a. Business Profit — per sale, not just per month
+
+The Business tab always showed your monthly totals. It now also shows **what each individual sale actually earned**. Two new cards at the bottom of the Business tab do this, and they work differently for your two businesses.
+
+When the Personal/Business toggle is set to **Business**, the Add Transaction form shows one extra row: **Ref / Order #**, **Panel**, and **Credits**. Personal entry is unchanged. You never fill all three in — each business uses its own boxes.
+
+### For goods deals — use Ref
+
+Put the same code on the sale **and** every cost belonging to it:
+
+- Sale to customer, Ref `INV-101` → +20,000
+- Vendor A, Ref `INV-101` → −6,000
+- Vendor B, Ref `INV-101` → −5,000
+- Commission, Ref `INV-101` → −1,000
+- Courier, Ref `INV-101` → −100
+
+The **Profit by Sale/Deal** card then shows that deal earned **7,900** (39.5%).
+
+Any number of costs works — two vendors, three, commission, courier. And it doesn't matter if you pay a vendor in a different month; the code keeps them together. If the customer never pays, the deal shows a **loss in red** instead of disappearing.
+
+### For IPTV — use Panel and Credits
+
+**When you buy credits**, enter the payment as a business expense and fill in **Panel** (e.g. `Premium` or `Cheap`) and **Credits** (how many you bought). The app works out the cost per credit itself.
+
+**When you make a sale**, fill in the same **Panel** and how many **Credits** it used:
+
+| Customer buys | Cheap | Premium |
+|---|---|---|
+| 1 month | 1 | 1 |
+| 2 months | 2 | 2 |
+| 3 months | 3 | 3 |
+| 6 months | **5** | 6 |
+| 12 months | **10** | 12 |
+
+That's the only number you type — the same hint appears under the Credits box so you don't have to remember it.
+
+The app spends your **oldest credits first**. So if you have 10 old credits at 170 and 50 new ones at 180, a 15-credit sale costs 10×170 + 5×180 = **2,600**. It splits it automatically. Premium and Cheap credits are kept completely separate and never mix.
+
+The **Credit Stock** card shows how many credits you have left in each panel and what they're worth — something you couldn't see before at all.
+
+### Two profit numbers, both correct
+
+**Net Profit** at the top is cash that moved this month. In a month where you buy a lot of credits it looks poor, because that money really did leave your account.
+
+**Profit by Sale/Deal** is what each sale actually earned.
+
+They won't match, and that's fine — they answer different questions. Don't try to reconcile them.
+
+If a sale has no Ref and no Credits, the app can't work out its cost, so it's listed as a note under the card rather than being quietly left out. And if you sell more credits than you've recorded buying, you'll get a warning that the profit is overstated until you enter the missing purchase.
+
+---
+
 ## 10. Backup and Restore
 
 At the bottom of the sidebar:

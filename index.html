@@ -416,6 +416,22 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
             </label>
             <button type="submit" class="primary-btn">Add Transaction</button>
           </div>
+          <div class="form-row" id="bizDetailRow" style="display:none;">
+            <label>Ref / Order #
+              <input type="text" id="txRef" list="refSuggestions" placeholder="e.g. INV-101" autocomplete="off">
+              <span class="cat-hint">Goods deals: same code on the sale and each cost</span>
+            </label>
+            <label>Panel
+              <input type="text" id="txPanel" list="panelSuggestions" placeholder="e.g. Premium" autocomplete="off">
+              <span class="cat-hint">IPTV only — which credit stock</span>
+            </label>
+            <label>Credits
+              <input type="number" id="txCredits" step="1" min="0" placeholder="0">
+              <span class="cat-hint">Cheap: 6mo=5, 12mo=10. Premium: 1/month</span>
+            </label>
+          </div>
+          <datalist id="refSuggestions"></datalist>
+          <datalist id="panelSuggestions"></datalist>
           <input type="hidden" id="txEditId">
         </form>
       </div>
@@ -625,6 +641,26 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
           <h2>Recent Business Transactions</h2>
           <div id="bizRecentTxWrap" class="recent-tx-wrap"></div>
         </div>
+      </div>
+
+      <div class="card">
+        <h2>Profit by Sale / Deal</h2>
+        <p class="hint">Sales in this month, with their real costs. Goods deals group by Ref; IPTV sales are costed from the credits they used. Costs from other months are included, so a deal is never shown as profit just because its vendor was paid later.</p>
+        <div class="table-wrap">
+          <table class="tx-table">
+            <thead>
+              <tr><th>Date</th><th>Deal</th><th class="right">Income</th><th class="right">Cost</th><th class="right">Profit</th><th class="right">Margin</th></tr>
+            </thead>
+            <tbody id="bizDealBody"></tbody>
+          </table>
+        </div>
+        <div id="bizDealNote" class="hint" style="margin:10px 0 0;"></div>
+      </div>
+
+      <div class="card">
+        <h2>Credit Stock</h2>
+        <p class="hint">Running position across all time — not affected by the month above. Each purchase keeps its own cost per credit, and sales spend the oldest credits first. Panels never share credits.</p>
+        <div id="bizStockWrap"></div>
       </div>
     </section>
 
@@ -1147,6 +1183,8 @@ function renderBusinessView() {
   renderBarChart(bizMonth, "bizBarWrap", "business");
   renderAccountsOverview("bizAccountsWrap", "business");
   renderRecentTransactions("bizRecentTxWrap", "business");
+  renderBizDeals();
+  renderBizStock();
 }
 
 /* ================= ACCOUNTS ================= */
@@ -1340,6 +1378,15 @@ document.getElementById("txForm").addEventListener("submit", (e) => {
     amount: parseFloat(document.getElementById("txAmount").value),
     description: document.getElementById("txDescription").value.trim(),
   };
+  if (bucket === "business") {
+    /* Business-only labels (Section 3.11). Stored only when non-empty so personal rows stay clean. */
+    const ref = document.getElementById("txRef").value.trim();
+    const panel = document.getElementById("txPanel").value.trim();
+    const credits = parseInt(document.getElementById("txCredits").value, 10);
+    if (ref) record.ref = ref;
+    if (panel) record.panel = panel;
+    if (Number.isFinite(credits) && credits > 0) record.credits = credits;
+  }
   const existingTx = editId ? db.transactions.find((t) => t.id === editId) : null;
   if (existingTx) {
     /* Preserve system flags the form never collects — this record is rebuilt from scratch, which would otherwise silently strip them (Section 3.10). */
@@ -1352,6 +1399,9 @@ document.getElementById("txForm").addEventListener("submit", (e) => {
   saveData();
   document.getElementById("txAmount").value = "";
   document.getElementById("txDescription").value = "";
+  /* Credits change every sale, so clear them. Ref and Panel stay put deliberately: a goods deal needs
+     the same Ref on the sale and each of its costs, and Panel repeats across IPTV sales. */
+  document.getElementById("txCredits").value = "";
   document.getElementById("txEditId").value = "";
   /* Clear the category filter BEFORE re-rendering, so the repopulation below is unfiltered and the
      sticky category can be restored from the full list (Section 2.3). Order matters here. */
@@ -1360,6 +1410,190 @@ document.getElementById("txForm").addEventListener("submit", (e) => {
   txAccountSelect.value = record.accountId;
   txCategorySelect.value = record.categoryId;
 });
+
+/* ================= BUSINESS PROFITABILITY (Section 3.11) ================= */
+/* Read-only analysis layer. Nothing here alters Income, Expenses, Net Profit, balances or any
+   personal figure — it only groups existing transactions and divides. */
+
+function bizTx() {
+  return db.transactions.filter((t) => (t.bucket || "personal") === "business" && !isTransferTx(t));
+}
+function creditPanels() {
+  const names = new Set();
+  bizTx().forEach((t) => { if (t.panel) names.add(t.panel); });
+  return Array.from(names).sort((a, b) => a.localeCompare(b));
+}
+function byDateThenId(a, b) { return (a.date || "").localeCompare(b.date || "") || String(a.id).localeCompare(String(b.id)); }
+
+/* FIFO costing for ONE panel. Credits are fungible inside a panel but never cross panels, so each
+   panel is walked independently: sales oldest-first consume purchases oldest-first. A sale spanning
+   two purchases gets a blended cost. Credits sold beyond what was purchased are costed at 0 and
+   reported as a shortfall rather than silently inflating profit. */
+function creditAllocation(panel) {
+  const purchases = bizTx()
+    .filter((t) => t.type === "expense" && t.panel === panel && Number(t.credits) > 0)
+    .sort(byDateThenId)
+    .map((p) => {
+      const bought = Number(p.credits);
+      return { id: p.id, date: p.date, description: p.description || "", amount: p.amount, bought, unitCost: p.amount / bought, used: 0 };
+    });
+  const sales = bizTx()
+    .filter((t) => t.type === "income" && t.panel === panel && Number(t.credits) > 0)
+    .sort(byDateThenId);
+
+  const costBySaleId = {};
+  let cursor = 0;
+  sales.forEach((s) => {
+    let need = Number(s.credits), cost = 0;
+    const slices = [];
+    while (need > 0 && cursor < purchases.length) {
+      const p = purchases[cursor];
+      const available = p.bought - p.used;
+      if (available <= 0) { cursor++; continue; }
+      const take = Math.min(available, need);
+      p.used += take; need -= take; cost += take * p.unitCost;
+      slices.push({ credits: take, unitCost: p.unitCost, purchaseDate: p.date });
+    }
+    costBySaleId[s.id] = { cost: round2(cost), slices, shortfall: need };
+  });
+  const totals = purchases.reduce((acc, p) => {
+    const left = p.bought - p.used;
+    acc.bought += p.bought; acc.used += p.used; acc.left += left; acc.valueLeft += left * p.unitCost;
+    return acc;
+  }, { bought: 0, used: 0, left: 0, valueLeft: 0 });
+  totals.valueLeft = round2(totals.valueLeft);
+  return { panel, purchases, costBySaleId, totals };
+}
+
+/* Every panel's allocation, computed once per render so a sale can look up its own credit cost. */
+function allCreditAllocations() {
+  const map = {};
+  creditPanels().forEach((p) => { map[p] = creditAllocation(p); });
+  return map;
+}
+function creditCostForSale(tx, allocations) {
+  if (!tx.panel || !Number(tx.credits)) return null;
+  const alloc = allocations[tx.panel];
+  return alloc ? alloc.costBySaleId[tx.id] || null : null;
+}
+
+/* Deals whose SALE falls in the given month. Costs are pulled in from ANY month, otherwise a deal
+   whose vendor was paid in a different month would report a false profit (Section 3.11c). */
+function buildDeals(month, allocations) {
+  const all = bizTx();
+  const salesThisMonth = all.filter((t) => t.type === "income" && monthKey(t.date) === month);
+  const deals = [];
+  const usedRefs = new Set();
+
+  salesThisMonth.forEach((sale) => {
+    const credit = creditCostForSale(sale, allocations);
+    if (sale.ref) {
+      if (usedRefs.has(sale.ref)) return;
+      usedRefs.add(sale.ref);
+      const income = all.filter((t) => t.type === "income" && t.ref === sale.ref).reduce((s, t) => s + t.amount, 0);
+      const costRows = all.filter((t) => t.type === "expense" && t.ref === sale.ref);
+      const otherCost = costRows.reduce((s, t) => s + t.amount, 0);
+      /* Every income row sharing this ref may carry its own credits. */
+      const creditCost = all.filter((t) => t.type === "income" && t.ref === sale.ref)
+        .reduce((s, t) => { const c = creditCostForSale(t, allocations); return s + (c ? c.cost : 0); }, 0);
+      const shortfall = all.filter((t) => t.type === "income" && t.ref === sale.ref)
+        .reduce((s, t) => { const c = creditCostForSale(t, allocations); return s + (c ? c.shortfall : 0); }, 0);
+      deals.push({ key: sale.ref, label: sale.ref, date: sale.date, kind: "goods", description: sale.description || "",
+        income, costRows, otherCost: round2(otherCost), creditCost: round2(creditCost), shortfall,
+        panel: sale.panel || "", credits: Number(sale.credits) || 0 });
+    } else if (credit) {
+      deals.push({ key: sale.id, label: sale.description || `${sale.panel} sale`, date: sale.date, kind: "iptv",
+        description: sale.description || "", income: sale.amount, costRows: [], otherCost: 0,
+        creditCost: credit.cost, shortfall: credit.shortfall, panel: sale.panel, credits: Number(sale.credits) });
+    }
+  });
+
+  deals.forEach((d) => {
+    d.totalCost = round2(d.otherCost + d.creditCost);
+    d.profit = round2(d.income - d.totalCost);
+    d.margin = d.income > 0 ? (d.profit / d.income) * 100 : null;
+  });
+  deals.sort((a, b) => byDateThenId({ date: b.date, id: b.key }, { date: a.date, id: a.key }));
+
+  /* Sales with neither a ref nor credits have no attributable cost — counted, never dropped. */
+  const unattributed = salesThisMonth.filter((t) => !t.ref && !creditCostForSale(t, allocations));
+  return { deals, unattributed: { count: unattributed.length, amount: round2(unattributed.reduce((s, t) => s + t.amount, 0)) } };
+}
+
+/* The Ref/Panel/Credits row exists only for Business — personal entry stays exactly as simple as before. */
+function updateBizDetailRow() {
+  document.getElementById("bizDetailRow").style.display = transactionsLedger === "business" ? "flex" : "none";
+  /* Suggestion lists: a typo would silently split a deal in two or invent a panel with no credits. */
+  const refs = Array.from(new Set(bizTx().map((t) => t.ref).filter(Boolean))).sort().reverse().slice(0, 50);
+  document.getElementById("refSuggestions").innerHTML = refs.map((r) => `<option value="${r}"></option>`).join("");
+  document.getElementById("panelSuggestions").innerHTML = creditPanels().map((p) => `<option value="${p}"></option>`).join("");
+}
+
+function renderBizDeals() {
+  const body = document.getElementById("bizDealBody");
+  const note = document.getElementById("bizDealNote");
+  const allocations = allCreditAllocations();
+  const { deals, unattributed } = buildDeals(bizMonth, allocations);
+
+  if (deals.length === 0) {
+    body.innerHTML = `<tr><td colspan="6" class="empty-state">No sales with a Ref or Credits this month. Add a Ref to a goods deal, or Panel + Credits to an IPTV sale, to see its profit here.</td></tr>`;
+  } else {
+    body.innerHTML = deals.map((d) => {
+      const parts = [];
+      if (d.creditCost > 0 || d.credits) parts.push(`${d.credits} credit${d.credits === 1 ? "" : "s"} from ${d.panel}: ${fmtMoney(d.creditCost)}`);
+      d.costRows.forEach((c) => parts.push(`${categoryDisplayName(getCategory(c.categoryId))}: ${fmtMoney(c.amount)}`));
+      const breakdown = parts.length ? `<div class="tx-meta">${parts.join(" · ")}</div>` : "";
+      const warn = d.shortfall > 0 ? `<div class="tx-meta" style="color:var(--expense)">⚠ ${d.shortfall} credit${d.shortfall === 1 ? "" : "s"} not covered by any recorded purchase — cost understated</div>` : "";
+      const kind = d.kind === "iptv" ? "IPTV" : "Goods";
+      return `<tr><td>${d.date}</td><td><span class="cat-badge">${kind}</span> ${d.label}${breakdown}${warn}</td>` +
+        `<td class="amount income">${fmtMoney(d.income)}</td><td class="amount expense">${fmtMoney(d.totalCost)}</td>` +
+        `<td class="amount ${d.profit < 0 ? "expense" : "income"}">${fmtMoney(d.profit)}</td>` +
+        `<td class="amount">${d.margin === null ? "—" : d.margin.toFixed(1) + "%"}</td></tr>`;
+    }).join("");
+    const t = deals.reduce((a, d) => ({ income: a.income + d.income, cost: a.cost + d.totalCost, profit: a.profit + d.profit }), { income: 0, cost: 0, profit: 0 });
+    const totalMargin = t.income > 0 ? (t.profit / t.income) * 100 : null;
+    body.innerHTML += `<tr class="budget-total-row"><td></td><td><strong>Total (${deals.length} deal${deals.length === 1 ? "" : "s"})</strong></td>` +
+      `<td class="amount income"><strong>${fmtMoney(round2(t.income))}</strong></td><td class="amount expense"><strong>${fmtMoney(round2(t.cost))}</strong></td>` +
+      `<td class="amount ${t.profit < 0 ? "expense" : "income"}"><strong>${fmtMoney(round2(t.profit))}</strong></td>` +
+      `<td class="amount"><strong>${totalMargin === null ? "—" : totalMargin.toFixed(1) + "%"}</strong></td></tr>`;
+  }
+  note.innerHTML = unattributed.count > 0
+    ? `${unattributed.count} other business sale${unattributed.count === 1 ? "" : "s"} this month (${fmtMoney(unattributed.amount)}) ${unattributed.count === 1 ? "has" : "have"} no Ref and no Credits, so no cost can be attributed — ${unattributed.count === 1 ? "it is" : "they are"} not included above.`
+    : "";
+}
+
+function renderBizStock() {
+  const wrap = document.getElementById("bizStockWrap");
+  const panels = creditPanels();
+  if (panels.length === 0) {
+    wrap.innerHTML = `<div class="empty-state">No credit purchases recorded yet. Enter a business expense with a Panel name and the number of Credits bought.</div>`;
+    return;
+  }
+  wrap.innerHTML = panels.map((panel) => {
+    const a = creditAllocation(panel);
+    if (a.purchases.length === 0) {
+      return `<div style="margin-bottom:16px;"><h3 style="font-size:14px;margin:0 0 8px;">${panel}</h3>` +
+        `<div class="hint" style="color:var(--expense)">Credits have been sold on this panel but no purchase is recorded, so those sales show no cost.</div></div>`;
+    }
+    const soldCredits = bizTx().filter((t) => t.type === "income" && t.panel === panel && Number(t.credits) > 0).reduce((s, t) => s + Number(t.credits), 0);
+    const shortfall = Math.max(0, soldCredits - a.totals.bought);
+    const rows = a.purchases.map((p) => {
+      const left = p.bought - p.used;
+      return `<tr><td>${p.date}</td><td>${p.description || "—"}</td><td class="amount">${p.bought}</td><td class="amount">${p.used}</td>` +
+        `<td class="amount"><strong>${left}</strong></td><td class="amount">${fmtMoney(round2(p.unitCost))}</td><td class="amount">${fmtMoney(round2(left * p.unitCost))}</td></tr>`;
+    }).join("");
+    const warn = shortfall > 0
+      ? `<div class="hint" style="color:var(--expense);margin:8px 0 0;">⚠ ${shortfall} credit${shortfall === 1 ? "" : "s"} sold beyond what was purchased on this panel. Those are costed at zero, so profit above is overstated until the missing purchase is entered.</div>`
+      : "";
+    return `<div style="margin-bottom:18px;">
+      <h3 style="font-size:14px;margin:0 0 8px;">${panel} — <strong>${a.totals.left}</strong> credit${a.totals.left === 1 ? "" : "s"} left, worth ${fmtMoney(a.totals.valueLeft)}</h3>
+      <div class="table-wrap"><table class="tx-table">
+        <thead><tr><th>Bought on</th><th>Note</th><th class="right">Bought</th><th class="right">Used</th><th class="right">Left</th><th class="right">Cost/credit</th><th class="right">Value left</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>${warn}
+    </div>`;
+  }).join("");
+}
 
 /* ================= TRANSFERS (Section 3.10) ================= */
 /* A transfer is a pair of ordinary transactions sharing one transferId: an expense leaving the
@@ -1436,6 +1670,9 @@ function editTransaction(id) {
   txCategorySelect.value = t.categoryId;
   document.getElementById("txAmount").value = t.amount;
   document.getElementById("txDescription").value = t.description || "";
+  document.getElementById("txRef").value = t.ref || "";
+  document.getElementById("txPanel").value = t.panel || "";
+  document.getElementById("txCredits").value = t.credits ? t.credits : "";
   document.getElementById("txEditId").value = t.id;
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
@@ -1485,6 +1722,7 @@ function renderTransactionsView() {
   if (prevFrom) trFrom.value = prevFrom;
   if (prevTo) trTo.value = prevTo;
   else if (trTo.options.length > 1 && trTo.value === trFrom.value) trTo.selectedIndex = 1;
+  updateBizDetailRow();
   if (!document.getElementById("trDate").value) document.getElementById("trDate").value = todayISO();
   if (!document.getElementById("txDate").value) document.getElementById("txDate").value = todayISO();
   renderTransactionsTable();
@@ -1965,7 +2203,7 @@ function renderCategoriesView() {
 const SHEET_TABS = {
   Categories: ["id", "name", "type", "color", "parentId", "order", "bucket"],
   Accounts: ["id", "name", "type", "openingBalance", "openingDate", "color", "bucket"],
-  Transactions: ["id", "type", "date", "accountId", "categoryId", "amount", "description", "isReconciliation", "bucket", "transferId"],
+  Transactions: ["id", "type", "date", "accountId", "categoryId", "amount", "description", "isReconciliation", "bucket", "transferId", "ref", "panel", "credits"],
   Budgets: ["id", "categoryId", "month", "amount"],
   Reconciliations: ["id", "accountId", "date", "actualBalance", "computedBefore", "diff"],
   Settings: ["key", "value"],
@@ -2062,7 +2300,7 @@ async function readAllFromSheet() {
 function coerceTypesFromSheet(raw) {
   const categories = raw.Categories.filter((r) => r.id).map((r) => ({ id: r.id, name: r.name, type: r.type, color: r.color, parentId: r.parentId ? r.parentId : null, order: r.order !== "" && r.order !== undefined && r.order !== null ? Number(r.order) : undefined, bucket: r.bucket || "personal" }));
   const accounts = raw.Accounts.filter((r) => r.id).map((r) => ({ id: r.id, name: r.name, type: r.type, openingBalance: parseFloat(r.openingBalance) || 0, openingDate: r.openingDate, color: r.color, bucket: r.bucket || "personal" }));
-  const transactions = raw.Transactions.filter((r) => r.id).map((r) => ({ id: r.id, type: r.type, date: r.date, accountId: r.accountId, categoryId: r.categoryId, amount: parseFloat(r.amount) || 0, description: r.description || "", isReconciliation: String(r.isReconciliation).toUpperCase() === "TRUE", bucket: r.bucket || "personal", transferId: r.transferId ? String(r.transferId) : "" }));
+  const transactions = raw.Transactions.filter((r) => r.id).map((r) => ({ id: r.id, type: r.type, date: r.date, accountId: r.accountId, categoryId: r.categoryId, amount: parseFloat(r.amount) || 0, description: r.description || "", isReconciliation: String(r.isReconciliation).toUpperCase() === "TRUE", bucket: r.bucket || "personal", transferId: r.transferId ? String(r.transferId) : "", ref: r.ref ? String(r.ref) : "", panel: r.panel ? String(r.panel) : "", credits: Number(r.credits) > 0 ? Number(r.credits) : 0 }));
   const budgets = raw.Budgets.filter((r) => r.id).map((r) => ({ id: r.id, categoryId: r.categoryId, month: r.month, amount: parseFloat(r.amount) || 0 }));
   const reconciliations = raw.Reconciliations.filter((r) => r.id).map((r) => ({ id: r.id, accountId: r.accountId, date: r.date, actualBalance: parseFloat(r.actualBalance) || 0, computedBefore: parseFloat(r.computedBefore) || 0, diff: parseFloat(r.diff) || 0 }));
   const settingsRow = raw.Settings.find((r) => r.key === "currency");

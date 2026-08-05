@@ -60,6 +60,9 @@ Two things about the move that were verified rather than assumed:
 { id, type: "income" | "expense", bucket: "personal" | "business", date, accountId, categoryId, amount, description, isReconciliation?: true, transferId?: string }
 ```
 - `isReconciliation` is only set on auto-generated adjustment transactions created by the Reconcile feature (Section 3.6).
+- `ref` — free-text deal/invoice code (e.g. `INV-101`) used by the **goods** business to group one sale with all of its costs (Section 3.11). Empty/absent on ordinary transactions.
+- `panel` — free-text IPTV panel name (e.g. `Premium`, `Cheap`) identifying **which separate credit stock** a transaction belongs to (Section 3.11). Credits never move between panels.
+- `credits` — number of credits. On a business **expense** with a `panel`, this is credits *bought* (making that row a credit purchase, and `amount / credits` its cost per credit). On a business **income** with a `panel`, this is credits *used* by that sale. Absent/0 on everything else.
 - `transferId` — set on **both halves** of a transfer (Section 3.10). Empty/absent means an ordinary transaction. A non-empty value means this row is one half of a money movement between two of your own accounts, and the value is shared by exactly the two rows forming that pair. Presence of a value is the *only* test for "is this a transfer" — there is deliberately no separate boolean flag, so the two can never disagree with each other.
 - `bucket` — like Category (2.1), the Transactions tab shows one ledger at a time via a Personal/Business toggle; a new transaction always takes the bucket of the currently active toggle, not a per-transaction picker.
 - **Bulk move account**: the Transactions tab's multi-select bar has a "Move to Account" action for fixing mis-entered transactions (e.g. logged against Cash instead of a bank account). It changes only `accountId` on the selected transactions — every other field (`type`, `date`, `categoryId`, `amount`, `description`, `bucket`) is left untouched. Because both the source and target account balances are always computed live from `accountId` matches (Section 3.1), moving a transaction automatically and correctly shifts its effect from the old account's balance to the new one — no separate adjustment or reconciliation entry is created or needed. The target-account dropdown is scoped to the currently active ledger (`transactionsLedger`), so a transaction can never be moved into an account belonging to the other bucket. Any reconciliation history (Section 2.5) tied to the *old* account is left as-is — it's a historical log of what was checked at the time, not a live calculation, so moving transactions after the fact does not retroactively change it.
@@ -242,6 +245,59 @@ isTransferTx(t) = !!t.transferId
 
 **Editing and deleting.** Deleting either half deletes both (the confirmation names the other half) — leaving one half behind would silently corrupt an account balance, which Section 4 rule 3's "never silently orphan" principle forbids. Editing a transfer half through the ordinary Edit button is **blocked** with a message directing the user to delete and re-enter, because editing one half's amount or account would desynchronise the pair. As a defensive measure the `txForm` submit handler preserves `transferId` on any record it saves, since it rebuilds the record object from scratch and would otherwise strip the field.
 
+### 3.11 Business profitability — deal grouping and credit costing
+
+**The problem.** The Business tab could only ever answer "how much cash moved this month" (3.8). It could not answer "did *that* sale make money", because nothing linked a sale to its costs. The user runs two different businesses through this one ledger, and each needs a different mechanism:
+
+| | **Goods** | **IPTV** |
+|---|---|---|
+| Bought | per order, from one or more vendors | credits in bulk, ahead of any sale |
+| Costs | vendor payment(s) + commission + courier | the credits only |
+| Invoiced? | yes, one invoice per customer | no invoice at all |
+| Mechanism | `ref` grouping | `panel` + `credits` FIFO costing |
+
+**Commission is a fixed negotiated amount, never a percentage** — confirmed with the user; it can be most of the sale (10,000 commission on a 12,000 deal), so a deal can legitimately be near-breakeven or a loss. Invoiced amount always equals the amount received (agreed before invoicing, so no partial payments), which is why **no receivables/partly-paid tracking exists or is needed**.
+
+#### 3.11a Goods deals — grouping by `ref`
+```
+dealIncome(ref) = Σ amount of business income transactions with that ref
+dealCosts(ref)  = Σ amount of business expense transactions with that ref
+dealProfit(ref) = dealIncome − dealCosts − creditCost(the deal's sale, if any)
+margin(ref)     = dealProfit / dealIncome × 100     (blank if dealIncome is 0)
+```
+One sale, any number of cost rows — two vendors, commission and courier all simply share the `ref`. **Grouping is by code, never by date**, so a cost paid in one month and a payment received in another still land on the same deal; this is what makes the user's late-payment case work. A deal with costs but no income yields a negative profit and is shown as a loss rather than being invisible.
+
+#### 3.11b IPTV credits — separate stocks per panel, oldest-first costing
+The user has **two physically separate vendor panels**; a premium credit cannot be spent on a cheap user. So `panel` partitions credits into independent stocks, and **no costing ever crosses a panel boundary**.
+
+Within one purchase every credit costs the same (`amount / credits`), but the price drifts between purchases (observed range 50–260 per credit, set by the market). The user tops up when roughly 10 credits remain, so a panel routinely holds a few old credits at the old price alongside new ones at the new price.
+
+```
+For one panel, in date order (ties broken by id for stability):
+  purchases = business expenses with that panel and credits > 0   → unitCost = amount / credits
+  sales     = business income  with that panel and credits > 0
+  Walk sales oldest-first, consuming purchases oldest-first (FIFO):
+    creditCost(sale) = Σ (creditsTakenFromPurchase × thatPurchase.unitCost)
+  A single sale may span two purchases and is charged a blended cost.
+```
+**The user picks only the panel and the credit count — never a specific purchase.** Credits are fungible within a panel (they are just a balance in the vendor's panel), so asking which purchase a sale drew from would be inventing information the user does not have. FIFO removes that question.
+
+**Credits per sale is the user's own number, and the app deliberately knows nothing about months or bonus tiers.** Cheap panel: 1 month = 1 credit, 6 months = 5 credits, 12 months = 10 credits. Premium: always 1 credit per month. Encoding those tiers would mean maintaining the vendor's commercial rules in the app; instead the volume bonus *is* the smaller number the user types, and it surfaces automatically as a higher margin. A hint listing the tiers sits next to the Credits box so it doesn't have to be memorised.
+
+**Shortfall must be reported, never hidden.** If a panel's recorded sales consume more credits than its recorded purchases supplied, the excess is costed at **0** and the affected deals plus the Credit Stock card carry an explicit warning. Silently costing missing credits at zero would overstate profit — exactly the class of quiet misstatement Section 6 exists to prevent.
+
+```
+Stock per purchase: left = bought − used(by FIFO),  valueLeft = left × unitCost
+Stock per panel:    Σ left,  Σ valueLeft
+```
+
+#### 3.11c Scope, and the two profit numbers that must never be forced to agree
+- **Profit by Deal** lists deals whose **sale** falls in the selected Business month, but pulls in costs **from any month** — otherwise a deal whose vendor was paid in a different month would show a false profit.
+- **Credit Stock** is **not** month-scoped. It is a running position, so it always reflects every purchase and sale to date.
+- Business income with neither a `ref` nor `credits` cannot have a cost attributed to it. Such rows are **counted and reported** beneath the deal list rather than silently omitted.
+- **`Net Profit` (3.8) and deal profit will not match, and neither is wrong.** Net Profit is cash that moved this month; in a month where credits are bought in bulk it looks poor because the money genuinely left. Deal profit is what each sale earned. They answer different questions and are deliberately kept in separate cards; no attempt is made to reconcile them.
+- Everything here is **read-only and additive**. `Income`, `Expenses`, `Net Profit`, `Total Business Balance`, the donut, the bar chart, all account balances, and every personal figure are untouched — the three new fields are labels that feed two new cards and alter no existing calculation. Transfers (3.10) are excluded from these views too, since a transfer is not a sale.
+
 ---
 
 ## 4. Business Rules / Invariants (must hold at all times)
@@ -265,7 +321,7 @@ Your Google Sheet has one tab per entity. The exact columns, in order, that get 
 |---|---|
 | `Categories` | `id, name, type, color, parentId, order, bucket` |
 | `Accounts` | `id, name, type, openingBalance, openingDate, color, bucket` |
-| `Transactions` | `id, type, date, accountId, categoryId, amount, description, isReconciliation, bucket, transferId` |
+| `Transactions` | `id, type, date, accountId, categoryId, amount, description, isReconciliation, bucket, transferId, ref, panel, credits` |
 | `Budgets` | `id, categoryId, month, amount` |
 | `Reconciliations` | `id, accountId, date, actualBalance, computedBefore, diff` |
 | `Settings` | `key, value` |
@@ -329,6 +385,20 @@ When a new field is added to categories, accounts, or transactions (like `parent
 **8.15 Net This Month stat** — add income and expense transactions in the same month, confirm "Net This Month" equals Income − Expense exactly; switch months and confirm it recalculates per month; confirm the Business tab's 4-card stat grid is unaffected (still `repeat(4, 1fr)` on desktop) and its "Net Profit" figure is untouched.
 
 **8.16 Total Balance moved to Accounts** — confirm the Dashboard has exactly 4 stat cards (Income, Expenses, Net This Month, Savings Rate) and no Total Balance card anywhere on it; confirm the Accounts tab's "Your Accounts" card shows "Total Balance (Personal)" matching the sum of personal accounts' `accountCurrentBalance`, and that it excludes any business accounts even though the account list below it shows both; confirm switching Dashboard months does not affect the Accounts tab figure at all (it's not month-scoped); confirm the Business tab's "Total Business Balance" is untouched.
+
+**8.21 Business deal grouping and credit costing (Section 3.11)** — the FIFO walk is the risky part; test the boundaries, not just the happy path:
+- **Goods deal**: one sale with two vendor costs, a commission and a courier charge all sharing a `ref`; confirm profit = income − all four costs and margin = profit/income. Add a cost row dated in a *different month* and confirm it still counts toward that deal.
+- Confirm a `ref` with costs but **no** income shows a negative profit (loss), not a blank row or a crash.
+- Confirm commission larger than the sale yields a loss shown as negative, since commission is a negotiated amount with no upper bound.
+- **FIFO within one panel**: purchase 100 credits at 170, then 50 at 180. A 10-credit sale must cost 1,700. Once only 10 old credits remain, a 15-credit sale must cost 10×170 + 5×180 = **2,600** — the blended figure is the specific regression to watch.
+- **Panel isolation**: with credits in both Premium and Cheap, confirm a Premium sale is never costed from Cheap credits and vice versa, and that each panel's stock totals are independent.
+- **Ordering**: confirm costing is by transaction **date**, not entry order — enter an earlier-dated purchase *after* a later one and confirm the earlier one is consumed first.
+- **Shortfall**: sell more credits than were ever purchased in a panel; confirm the excess is costed at 0, the deal is flagged, and the Credit Stock card shows the warning rather than quietly overstating profit.
+- **Divide-by-zero**: a credit purchase with `credits` of 0 or blank must be ignored as a purchase, not produce `Infinity`/`NaN` anywhere.
+- **Stock arithmetic**: for every purchase confirm `left = bought − used` and `valueLeft = left × unitCost`, and that panel totals equal the sum of their purchases. Confirm the card is **not** month-scoped (switching Business months must not change it).
+- **Scope**: confirm the deal list is filtered to sales in the selected month, that business income with neither `ref` nor `credits` is reported as a count beneath the list rather than dropped, and that transfer halves never appear as deals.
+- **Isolation**: confirm Income, Expenses, Net Profit, Total Business Balance, the donut, the bar chart and every personal figure are byte-for-byte unchanged by adding these fields.
+- **Round-trip (8.7)**: sync and confirm `ref`, `panel` and `credits` all survive with correct types — `credits` must come back as a **number**, and a blank must not become `NaN` or `"0"`.
 
 **8.20 Category type-to-filter (Section 2.3)** — the risk here is not the filtering itself but the six existing readers/writers of `txCategory.value`, so test those explicitly:
 - Type a subcategory fragment (`groc`) and confirm the dropdown narrows to that one category and selects it automatically; save a transaction and confirm it is filed against that exact category.
@@ -484,6 +554,14 @@ This mobile layout work applies to the **Cloud** copy first, since that's the on
 - **Action required**: on the live site, select the existing Rs 20,000 pair (the UBL "Cash Withdrawal" expense and the Cash "Cash Deposite" income, both dated 2026-08-02) and use **Mark as Transfer** — August's Income should drop from Rs 214,553 to Rs 194,553, Expenses by Rs 20,000, and Savings Rate rise to about 53.2%, with both account balances unchanged.
 - **2026-07-30 (hosting moved from Netlify to GitHub Pages)** — The Cloud copy is now live at **<https://mudassar-shah.github.io/money-manager-cloud/>**, served by GitHub Pages from the `mudassar-shah/money-manager-cloud` repository (branch `main`). Netlify is no longer used: its free plan meters "credits" against deploy activity, and iterating on the app in a single day could consume a large share of the monthly allowance, while GitHub Pages has no equivalent limit for a static site. The old `peppy-lily-416823.netlify.app` URL is abandoned. Deployment is now "upload/push to the repo and it publishes itself" instead of a manual folder-drag — which also removes the recurring partial-upload hazard noted in the session backup, where Netlify Drop once uploaded only the dragged file and left `manifest.json`, `sw.js` and the three icons 404ing on the live site.
   Section 1.1 added to record the URL, the hosting mechanism and two things that were checked rather than assumed: (a) GitHub Pages serves from a **subpath** (`/money-manager-cloud/`) rather than a domain root, and every asset reference in the app is already relative (`manifest.json`, `apple-touch-icon.png`, `register("sw.js")`, the manifest's `./` start_url/scope/icons, and `sw.js`'s `./` SHELL_FILES), so the PWA, install prompt, icons and offline caching all work unchanged — these must never be converted to absolute `/…` paths, which would break on a subpath while looking correct on a root domain; and (b) Cloud Sync requires `https://mudassar-shah.github.io` to be added to the OAuth 2.0 Client ID's **Authorized JavaScript origins** in Google Cloud Console, since sign-in uses `google.accounts.oauth2.initTokenClient` which validates the page origin — without it, "Sign in with Google" fails on an origin mismatch. **No application code was changed for this migration.** Also corrected the Section 1 table, which still listed the three copies under stale `E:\Claude\…` paths; they are and have been under `D:\`. Change Log entries dated before 2026-07-30 refer to Netlify redeploys as accurate history, not live instructions.
+- **2026-08-01 (business profitability: deal grouping + credit FIFO costing)** — The Business tab could only answer "how much cash moved this month"; it could not answer "did *that* sale make money", because nothing linked a sale to its costs. Established through a long clarification with the user that **two different businesses** run through this one ledger, each needing a different mechanism (Section 3.11). Added three fields — `ref`, `panel`, `credits` — and two read-only cards, **Profit by Sale/Deal** and **Credit Stock**.
+  - **Goods**: one invoice, several vendors, plus a negotiated commission and courier charges, all grouped by a shared `ref`. Grouping is by code not date, so a cost paid in a different month still lands on the right deal. Commission is a **fixed negotiated amount, never a percentage** (confirmed — it can exceed the sale, so losses are real and are shown as negative).
+  - **IPTV**: two physically separate vendor panels, so `panel` partitions credits into independent stocks that never cross. Each purchase keeps its own `amount / credits` unit cost (observed 50–260, market-driven), and sales consume **oldest credits first**, so a sale can span two purchases and gets a blended cost. The user picks only the panel and the credit count — never a specific purchase — because credits are fungible inside a panel and asking would invent information they don't have.
+  - **The app deliberately knows nothing about months or the vendor's bonus tiers** (cheap: 6mo=5 credits, 12mo=10; premium: 1/month). Encoding those would mean maintaining someone else's commercial rules; instead the bonus *is* the smaller number typed, and it surfaces as a higher margin. A hint next to the Credits box lists the tiers.
+  - **Shortfall is reported, never hidden**: credits sold beyond what was purchased are costed at 0 and flagged on both cards, rather than quietly overstating profit.
+  - **Net Profit (3.8) and deal profit will not agree, and neither is wrong** — cash-moved-this-month versus what-each-sale-earned. Kept in separate cards with no attempt to reconcile them.
+  - Verified in-browser against a purpose-built dataset covering every boundary, all passing: the blended span (10×170 + 5×180 = **2,600**); **date ordering** (a later-dated purchase entered *first* in the data, earlier one still consumed first); panel isolation (Premium costed at 250, never touching Cheap); a goods deal picking up a cost dated the *following* month (12,100 total, 39.5%); commission exceeding the sale yielding a **−1,000 loss**; a zero-credit purchase ignored with no `Infinity`/`NaN`; shortfall of 999 credits costed at 0 and warned on both cards; stock card confirmed **not** month-scoped; unattributed sales counted and reported; and the existing Expenses figure unchanged (30,100 → 30,100). Mandatory **8.7 round-trip** passed for all three fields across four representative row shapes, with `credits` returning as a real number and blanks as `0`, never `NaN` or `"0"`. Zero console errors; rendered output visually checked.
+  - Mirrored into the PC copy (`index.html` markup + `app.js`) and the iPhone copy, with the shared JS **spliced from the Cloud copy so all three are byte-identical**. Marker counts reconcile (`cloud = app.js + index.html`, iPhone = cloud). No CSS was needed — existing `.hint`, `.cat-hint`, `.tx-table`, `.table-wrap`, `.cat-badge` and `.budget-total-row` classes were reused. Cloud Sync columns are Cloud-only by design (Section 1), correctly absent from the other two. The iPhone copy was **functionally executed**, not merely diffed — temp-copied into the Cloud folder to escape the `file://` sandbox, the full FIFO/deal suite re-run and passing, ledger row visibility confirmed to toggle, then deleted so it cannot reach an upload.
 - **2026-08-01 (type-to-filter on both category dropdowns)** — User pointed out that picking a category meant scrolling the entire ~79-item dropdown "from outer to lower", and asked for a search box on the Add Transaction picker *and* the Transactions filter picker. Added `txCategorySearch` and `filterCategorySearch` (Section 2.3, test 8.20): typing narrows the dropdown, a parent-name match keeps that parent's whole group, and a single remaining match is auto-selected. A hint shows `N of M categories`, or `No category matches`.
   - **Deliberately kept the native `<select>` as the source of truth** and only changed which options it contains. `txCategory.value` is read or written in six places (submit handler, `editTransaction`, the post-save sticky-field restore, the `txType` change handler, `renderTransactionsView`, initial load), and the sticky-field logic is order-sensitive about when it re-applies `.value`. A custom combobox would have had to touch all six; option-list filtering touched none, and it keeps the native iOS picker.
   - **The one real trap** was ordering: the search box must be cleared *before* `renderTransactionsView()` re-populates after a save, otherwise the sticky category can't be restored from a filtered list. Also cleared on **Edit** (an active filter could hide the category being edited), on ledger switch, and by the filter row's **Clear** button. The filter dropdown's re-render is called explicitly, since setting `.value` in code fires no `input` event.
