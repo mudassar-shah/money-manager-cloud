@@ -47,6 +47,7 @@ Two things about the move that were verified rather than assumed:
 - `parentId` — the id of another category, making this a subcategory. `null`/absent means top-level.
 - `order` — integer position among siblings (same `type` + `parentId` + `bucket`). Lower = higher in the list. Assigned automatically on creation (`nextCategoryOrder`), changed by the ↑/↓ buttons (`moveCategory`).
 - `bucket` — which ledger this category belongs to. Personal and Business categories are never mixed in the same list or dropdown.
+- `excludeFromTotals` — boolean. When true, transactions in this category are skipped by every income/expense figure but still counted in every balance (Section 3.12). Used for money that **moves without being earned or spent** — chiefly loans given and repaid. Absent/false on ordinary categories.
 
 **Invariant — must never be violated:** A category that already has its own subcategories (i.e. some other category's `parentId` points to it) cannot itself be given a `parentId`. If this happens, its own children become invisible (the UI only renders two levels deep). This is blocked at entry (`catForm` submit handler) and auto-repaired on every load (`repairOrphanedParents`) as a safety net, but the block is the real fix — the repair only exists in case it slips through anyway.
 
@@ -310,6 +311,46 @@ Stock per panel:    Σ left,  Σ valueLeft
 - **`Net Profit` (3.8) and deal profit will not match, and neither is wrong.** Net Profit is cash that moved this month; in a month where credits are bought in bulk it looks poor because the money genuinely left. Deal profit is what each sale earned. They answer different questions and are deliberately kept in separate cards; no attempt is made to reconcile them.
 - Everything here is **read-only and additive**. `Income`, `Expenses`, `Net Profit`, `Total Business Balance`, the donut, the bar chart, all account balances, and every personal figure are untouched — the three new fields are labels that feed two new cards and alter no existing calculation. Transfers (3.10) are excluded from these views too, since a transfer is not a sale.
 
+### 3.12 Excluded categories — money that moves without being earned or spent
+
+**The problem.** The user lends money from UBL and is repaid into UBL. Both legs were counted, so Income *and* Expenses were each overstated by the loan amount (real case: Rs 6,000 across two loans in July 2026) while the UBL balance stayed correct.
+
+**Why the transfer mechanism (3.10) cannot solve it.** `Mark as Transfer` requires the two halves to be on **different accounts**, and a loan leaves and returns to the same account. That guard is correct and must not be relaxed. More fundamentally, loans do not behave like transfers:
+
+| | Transfer | Loan |
+|---|---|---|
+| Timing | both halves at the same moment | repayment may come weeks later |
+| Completeness | always exactly two halves | may be partial, or never repaid |
+| If unrepaid | n/a | the money is still **owed to you**, not spent |
+
+Pairing would therefore count an unrepaid loan as an expense, which is wrong, and would break entirely on a partial repayment.
+
+**The mechanism: a flag on the category, not on the transactions.**
+```
+excludeFromTotals(categoryId) = the category's own flag
+A transaction is skipped by income/expense reporting iff its category has the flag set.
+```
+Because the flag lives on the category, it is **retroactive with no data migration** — ticking it corrects every past month instantly, since the user had already filed these under dedicated categories ("Office › Loan Given", "Loan return"). No pairing, no matching, and partial or late repayments need no special handling.
+
+**The same split as transfers applies, and for the same reason** (3.10):
+
+| Excludes flagged categories | Keeps them |
+|---|---|
+| Dashboard Income / Expenses / Net / Savings Rate | `accountNet` and all balance functions — the money genuinely moved |
+| Spending donut and 6-month bar (both ledgers) | Accounts carry-forward inflow/outflow — `closing = opening + inflow − outflow` |
+| Budget progress and the Budgets tab | Yearly Report account summary inflow/outflow |
+| Business tab totals; Yearly Report totals, donut, bar, annual budgets | Transaction lists — the rows stay visible |
+
+**Money still out on loan** (Accounts tab, beneath Total Balance):
+```
+outstanding = Σ(flagged personal EXPENSE amounts) − Σ(flagged personal INCOME amounts)
+```
+i.e. lent out minus returned. Shown only when non-zero, so it stays invisible for users who never lend. A negative result (more returned than lent, e.g. a loan predating the app) is shown as **owed by you** rather than as a negative number.
+
+**Bad debt is a deliberate manual decision.** If a loan is never repaid it eventually becomes a real loss, but only the user can decide when. The fix is to re-categorise that one transaction to an ordinary expense category; the app never makes that judgement automatically.
+
+**Cloud Sync safety (verified before implementation, at the user's request).** `readAllFromSheet` maps columns **by name from the sheet's own header row**, not by position, so adding a column cannot shift or scramble existing data, and a sheet **without** the new column simply yields `undefined` → `false`, which is the correct default. `pushAllToSheet` clears `A:Z` before rewriting, so no stale column survives. The boolean is stored exactly like `isReconciliation`, a pattern already proven in production since July. Test 8.23 covers the backward-compatibility case explicitly.
+
 ---
 
 ## 4. Business Rules / Invariants (must hold at all times)
@@ -331,7 +372,7 @@ Your Google Sheet has one tab per entity. The exact columns, in order, that get 
 
 | Sheet tab | Columns |
 |---|---|
-| `Categories` | `id, name, type, color, parentId, order, bucket` |
+| `Categories` | `id, name, type, color, parentId, order, bucket, excludeFromTotals` |
 | `Accounts` | `id, name, type, openingBalance, openingDate, color, bucket` |
 | `Transactions` | `id, type, date, accountId, categoryId, amount, description, isReconciliation, bucket, transferId, ref, panel, credits` |
 | `Budgets` | `id, categoryId, month, amount` |
@@ -397,6 +438,18 @@ When a new field is added to categories, accounts, or transactions (like `parent
 **8.15 Net This Month stat** — add income and expense transactions in the same month, confirm "Net This Month" equals Income − Expense exactly; switch months and confirm it recalculates per month; confirm the Business tab's 4-card stat grid is unaffected (still `repeat(4, 1fr)` on desktop) and its "Net Profit" figure is untouched.
 
 **8.16 Total Balance moved to Accounts** — confirm the Dashboard has exactly 4 stat cards (Income, Expenses, Net This Month, Savings Rate) and no Total Balance card anywhere on it; confirm the Accounts tab's "Your Accounts" card shows "Total Balance (Personal)" matching the sum of personal accounts' `accountCurrentBalance`, and that it excludes any business accounts even though the account list below it shows both; confirm switching Dashboard months does not affect the Accounts tab figure at all (it's not month-scoped); confirm the Business tab's "Total Business Balance" is untouched.
+
+**8.23 Excluded categories (Section 3.12)** — the user's live data exists only in Google Sheets, so backward compatibility is the priority test, not an afterthought:
+- **Backward compatibility (do this first)**: feed `coerceTypesFromSheet` a Categories set with the **old 7-column header** (no `excludeFromTotals`). Confirm every category still loads with `id`, `name`, `type`, `color`, `parentId`, `order` and `bucket` intact, and that the missing flag becomes `false` — never `undefined`, `NaN` or the string `"undefined"`.
+- Confirm a sheet row with the flag blank (`""`) also yields `false`, and one with `TRUE`/`true` yields `true`.
+- **Round-trip (8.7)**: flag a category, push, read back, and confirm the flag survives as a **boolean** and that no other category field changed value or type.
+- Tick the flag on an expense category and an income category; confirm Dashboard Income and Expenses each drop by exactly those categories' totals, that Savings Rate recalculates, and that the categories vanish from the spending donut.
+- **Confirm every account balance is byte-for-byte unchanged** before and after ticking — this is the whole point of the feature.
+- Confirm the Accounts carry-forward table still satisfies `closing = opening + inflow − outflow` with flagged transactions included there, and likewise on the Yearly Report account summary.
+- Confirm a budget set on a flagged category is unaffected in the sense that flagged spending no longer consumes any budget.
+- Confirm flagged transactions still appear normally in the Transactions list and Recent Transactions (they are hidden from totals, not from history).
+- **Outstanding line**: with a loan out and unreturned, confirm the Accounts tab shows the correct outstanding figure; repay it fully and confirm the line disappears rather than showing zero; confirm it counts personal only and ignores business.
+- Confirm unticking restores the original figures exactly.
 
 **8.22 Yearly Report ledger toggle (Section 3.7)** — this is the exact area where a missing bucket filter has caused three separate real leaks, so test isolation before anything else:
 - With both personal and business data in the same fiscal year, confirm the **Personal** view's Total Income, Total Expenses, Net Savings, Savings Rate, category donut, 12-month bar and account summary are **numerically identical to what they were before the toggle existed** — no business figure may move any of them.
@@ -576,6 +629,14 @@ This mobile layout work applies to the **Cloud** copy first, since that's the on
 - **Action required**: on the live site, select the existing Rs 20,000 pair (the UBL "Cash Withdrawal" expense and the Cash "Cash Deposite" income, both dated 2026-08-02) and use **Mark as Transfer** — August's Income should drop from Rs 214,553 to Rs 194,553, Expenses by Rs 20,000, and Savings Rate rise to about 53.2%, with both account balances unchanged.
 - **2026-07-30 (hosting moved from Netlify to GitHub Pages)** — The Cloud copy is now live at **<https://mudassar-shah.github.io/money-manager-cloud/>**, served by GitHub Pages from the `mudassar-shah/money-manager-cloud` repository (branch `main`). Netlify is no longer used: its free plan meters "credits" against deploy activity, and iterating on the app in a single day could consume a large share of the monthly allowance, while GitHub Pages has no equivalent limit for a static site. The old `peppy-lily-416823.netlify.app` URL is abandoned. Deployment is now "upload/push to the repo and it publishes itself" instead of a manual folder-drag — which also removes the recurring partial-upload hazard noted in the session backup, where Netlify Drop once uploaded only the dragged file and left `manifest.json`, `sw.js` and the three icons 404ing on the live site.
   Section 1.1 added to record the URL, the hosting mechanism and two things that were checked rather than assumed: (a) GitHub Pages serves from a **subpath** (`/money-manager-cloud/`) rather than a domain root, and every asset reference in the app is already relative (`manifest.json`, `apple-touch-icon.png`, `register("sw.js")`, the manifest's `./` start_url/scope/icons, and `sw.js`'s `./` SHELL_FILES), so the PWA, install prompt, icons and offline caching all work unchanged — these must never be converted to absolute `/…` paths, which would break on a subpath while looking correct on a root domain; and (b) Cloud Sync requires `https://mudassar-shah.github.io` to be added to the OAuth 2.0 Client ID's **Authorized JavaScript origins** in Google Cloud Console, since sign-in uses `google.accounts.oauth2.initTokenClient` which validates the page origin — without it, "Sign in with Google" fails on an origin mismatch. **No application code was changed for this migration.** Also corrected the Section 1 table, which still listed the three copies under stale `E:\Claude\…` paths; they are and have been under `D:\`. Change Log entries dated before 2026-07-30 refer to Netlify redeploys as accurate history, not live instructions.
+- **2026-08-08 (excluded categories — loans given and repaid)** — User lends money from UBL and is repaid into UBL; both legs were counted, overstating July Income *and* Expenses by Rs 6,000 each while the balance stayed correct. Verified first that the transfer mechanism (3.10) **cannot** solve this: `Mark as Transfer` requires two *different* accounts and a loan returns to the same one, and pairing would wrongly treat an unrepaid loan as an expense and break outright on a partial repayment. Added `excludeFromTotals` on **Category** — a tickbox "Don't count as income or expense" (Section 3.12).
+  - Because the flag lives on the category, it is **retroactive with no data migration**: the user had already filed these under dedicated categories, so ticking two boxes corrects July and every earlier month instantly. Partial and late repayments need no special handling; an unrepaid loan correctly stays out of expenses because the money is still owed, not spent.
+  - The nine reporting filters that previously read `!isTransferTx(t)` now share one predicate, **`countsInTotals(t)`**, so the transfer rule and the exclusion rule can never drift apart. Balance functions deliberately still count both.
+  - Also added the **"Lent out, not yet returned"** line on the Accounts tab (flagged personal money out minus back), hidden when it nets to zero so it never appears for someone who doesn't lend, and relabelled if negative rather than showing a negative amount. Flagged categories carry a "not counted" badge in the category list.
+  - **Sync safety was audited before writing any code, at the user's explicit request** — their live data exists only in Google Sheets. `readAllFromSheet` maps columns **by name from the sheet's own header row**, so adding a column cannot shift or scramble existing data; `pushAllToSheet` clears `A:Z` before rewriting so no stale column survives; the boolean uses the same string-compare as `isReconciliation`, proven in production since July.
+  - Verified: an **old 7-column Categories sheet** (exactly the user's current one) loads with every field intact — `parentId`, numeric `order`, `bucket` — and the absent flag becomes `false` as a real boolean, never `undefined`/`NaN`; blank/`TRUE`/`true`/`FALSE` cells coerce correctly; a full round-trip preserves the flag with **every other field identical**. Behaviourally: Income 106,000 → 100,000 and Expenses 26,000 → 20,000, the Yearly Report follows, the loan leaves the donut, **every account balance and the entire carry-forward table are byte-identical before and after**, a partial repayment correctly shows Rs 3,000 outstanding, unticking restores the original figures **exactly**, and flagged rows stay visible in the transactions list. Zero errors.
+  - **A real bug was caught by these tests and fixed**: hiding the outstanding block returned early without clearing its value, leaving a stale money figure inside a hidden element — the kind of thing that resurfaces later looking authoritative.
+  - Mirrored into the PC and iPhone copies; marker counts reconcile, with the two Cloud-only differences confirmed to be exactly the sync schema line and the sync reader line. The iPhone copy was **functionally executed**, all 9 checks passing, then deleted from the upload folder.
 - **2026-08-08 (Yearly Report covers both ledgers)** — User asked whether a yearly report existed for the business and confirmed it should use the **same 1 July – 30 June fiscal year** as personal, with the same unlimited year navigation. Verified first that it genuinely did not exist: every FY function was hardcoded to `"personal"` and the page had no ledger toggle at all. Added a Personal/Business toggle (`yearlyLedger`) matching the Categories and Transactions pattern — Section 4 rule 2 forbids *mixing* ledgers in one figure, not offering a switch, so the rule was clarified rather than broken (Section 3.7).
   - Business mode relabels **Net Savings → Net Profit** and **Savings Rate → Profit Margin** (same arithmetic, Business-tab naming), hides **Annual Budget vs Actual** since business budgeting doesn't exist, and shows a new **Annual Profit by Sale/Deal** card in its place — Section 3.11's grouping and FIFO credit costing applied across all 12 FY months instead of one.
   - `buildDeals` was generalised to accept either a month string or a **Set of months**, and the deal-table renderer extracted into one shared `renderDealTable` used by both the monthly and annual cards, so the two can never drift apart.

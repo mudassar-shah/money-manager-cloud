@@ -350,6 +350,11 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
           <div class="stat-value" id="accountsTotalBalance">-</div>
           <div class="stat-sub">All time</div>
         </div>
+        <div class="stat" id="accountsOutstandingBlock" style="margin-bottom:14px;display:none;">
+          <div class="stat-label" id="accountsOutstandingLabel">Lent out, not yet returned</div>
+          <div class="stat-value" id="accountsOutstanding">-</div>
+          <div class="stat-sub">Already counted in the balance above — it left your account</div>
+        </div>
         <p class="hint">Balances update automatically from your transactions. Use "Reconcile" after your salary lands, or any time your bank balance doesn't match what's shown here.</p>
         <div id="accountListWrap" class="account-list-wrap"></div>
       </div>
@@ -712,6 +717,10 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
           <label>Color
             <input type="color" id="catColor" value="#6366f1">
           </label>
+          <label style="flex-direction:row;align-items:center;gap:6px;font-weight:400;">
+            <input type="checkbox" id="catExclude" style="width:auto;min-width:0;">
+            <span>Don't count as income or expense</span>
+          </label>
           <button type="submit" id="catFormSubmitBtn" class="primary-btn">Add Category</button>
           <button type="button" id="catFormCancelBtn" class="ghost-btn small" style="display:none;">Cancel</button>
           <input type="hidden" id="catEditId">
@@ -1062,7 +1071,7 @@ document.getElementById("dashNextMonth").addEventListener("click", () => { dashM
 
 function renderDashboard() {
   document.getElementById("dashMonthLabel").textContent = monthLabel(dashMonth);
-  const monthTx = db.transactions.filter((t) => monthKey(t.date) === dashMonth && (t.bucket || "personal") === "personal" && !isTransferTx(t));
+  const monthTx = db.transactions.filter((t) => monthKey(t.date) === dashMonth && (t.bucket || "personal") === "personal" && countsInTotals(t));
   const monthIncome = monthTx.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
   const monthExpense = monthTx.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0);
   const savingsRate = monthIncome > 0 ? ((monthIncome - monthExpense) / monthIncome) * 100 : 0;
@@ -1119,7 +1128,7 @@ function renderBarChart(refMonth, wrapId, bucket) {
   const months = [];
   for (let i = 5; i >= 0; i--) months.push(shiftMonth(refMonth, -i));
   const data = months.map((m) => {
-    const tx = db.transactions.filter((t) => monthKey(t.date) === m && (t.bucket || "personal") === (bucket || "personal") && !isTransferTx(t));
+    const tx = db.transactions.filter((t) => monthKey(t.date) === m && (t.bucket || "personal") === (bucket || "personal") && countsInTotals(t));
     return { month: m, income: tx.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0), expense: tx.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0) };
   });
   const max = Math.max(1, ...data.map((d) => Math.max(d.income, d.expense)));
@@ -1144,7 +1153,7 @@ function renderBudgetProgress(month, containerId) {
   const wrap = document.getElementById(containerId);
   const budgets = db.budgets.filter((b) => b.month === month);
   if (budgets.length === 0) { wrap.innerHTML = `<div class="empty-state">No budgets set for this month. Go to the Budgets tab to set some.</div>`; return; }
-  const monthTx = db.transactions.filter((t) => monthKey(t.date) === month && t.type === "expense" && (t.bucket || "personal") === "personal" && !isTransferTx(t));
+  const monthTx = db.transactions.filter((t) => monthKey(t.date) === month && t.type === "expense" && (t.bucket || "personal") === "personal" && countsInTotals(t));
   let totalBudget = 0, totalSpent = 0;
   const rows = budgets.map((b) => {
     const cat = getCategory(b.categoryId);
@@ -1190,7 +1199,7 @@ document.getElementById("bizNextMonth").addEventListener("click", () => { bizMon
 
 function renderBusinessView() {
   document.getElementById("bizMonthLabel").textContent = monthLabel(bizMonth);
-  const monthTx = db.transactions.filter((t) => monthKey(t.date) === bizMonth && (t.bucket || "personal") === "business" && !isTransferTx(t));
+  const monthTx = db.transactions.filter((t) => monthKey(t.date) === bizMonth && (t.bucket || "personal") === "business" && countsInTotals(t));
   const income = monthTx.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
   const expense = monthTx.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0);
   document.getElementById("bizIncome").textContent = fmtMoney(income);
@@ -1266,6 +1275,7 @@ function renderAccountsView() {
   document.getElementById("accountsMonthLabel").textContent = monthLabel(accountsMonth);
   if (!document.getElementById("accOpeningDate").value) document.getElementById("accOpeningDate").value = todayISO();
   document.getElementById("accountsTotalBalance").textContent = fmtMoney(totalNetWorth("personal"));
+  renderOutstandingLoans();
   const listWrap = document.getElementById("accountListWrap");
   if (db.accounts.length === 0) {
     listWrap.innerHTML = `<div class="empty-state">No accounts yet. Add your bank, cash, or savings account above.</div>`;
@@ -1434,7 +1444,7 @@ document.getElementById("txForm").addEventListener("submit", (e) => {
    personal figure — it only groups existing transactions and divides. */
 
 function bizTx() {
-  return db.transactions.filter((t) => (t.bucket || "personal") === "business" && !isTransferTx(t));
+  return db.transactions.filter((t) => (t.bucket || "personal") === "business" && countsInTotals(t));
 }
 function creditPanels() {
   const names = new Set();
@@ -1633,6 +1643,29 @@ function renderBizStock() {
    source account and an income arriving in the destination. Excluded from every income/expense
    figure, but deliberately still counted in all balance and account inflow/outflow figures. */
 function isTransferTx(t) { return !!t.transferId; }
+/* A category flagged "don't count as income or expense" — loans given and repaid, and anything else
+   that moves without being earned or spent (Section 3.12). */
+function isExcludedTx(t) { const c = getCategory(t.categoryId); return !!(c && c.excludeFromTotals); }
+/* The single predicate every income/expense figure filters on. Balance functions deliberately do NOT
+   use it: the money genuinely moved, so balances must keep counting it (3.10, 3.12). */
+function countsInTotals(t) { return !isTransferTx(t) && !isExcludedTx(t); }
+
+/* Money out on loan = flagged personal money that left, minus flagged personal money that came back.
+   Hidden entirely when it nets to zero, so it never appears for someone who doesn't lend (3.12). */
+function renderOutstandingLoans() {
+  const block = document.getElementById("accountsOutstandingBlock");
+  const flagged = db.transactions.filter((t) => (t.bucket || "personal") === "personal" && isExcludedTx(t));
+  const out = flagged.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0);
+  const back = flagged.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
+  const net = round2(out - back);
+  /* Clear the figure as well as hiding it — a stale amount left in a hidden element is exactly the
+     kind of thing that resurfaces later looking authoritative. */
+  if (Math.abs(net) < 0.01) { block.style.display = "none"; document.getElementById("accountsOutstanding").textContent = "-"; return; }
+  block.style.display = "";
+  /* A negative net means more came back than went out — e.g. a loan made before you started tracking. */
+  document.getElementById("accountsOutstandingLabel").textContent = net > 0 ? "Lent out, not yet returned" : "Returned to you beyond what you lent";
+  document.getElementById("accountsOutstanding").textContent = fmtMoney(Math.abs(net));
+}
 
 function ensureTransferCategory(type, bucket) {
   let cat = db.categories.find((c) => c.name === "Transfer" && c.type === type && (c.bucket || "personal") === bucket);
@@ -1854,7 +1887,7 @@ function renderBudgetsView() {
   document.getElementById("budgetMonthLabel").textContent = monthLabel(budgetMonth);
   const wrap = document.getElementById("budgetListWrap");
   const expenseCats = getOrderedCategoriesFlat("expense", "personal");
-  const monthTx = db.transactions.filter((t) => monthKey(t.date) === budgetMonth && t.type === "expense" && (t.bucket || "personal") === "personal" && !isTransferTx(t));
+  const monthTx = db.transactions.filter((t) => monthKey(t.date) === budgetMonth && t.type === "expense" && (t.bucket || "personal") === "personal" && countsInTotals(t));
   let totalBudget = 0, totalSpent = 0;
   const rows = expenseCats.map((cat) => {
     const budget = db.budgets.find((b) => b.categoryId === cat.id && b.month === budgetMonth);
@@ -1948,7 +1981,7 @@ function renderYearlyView() {
   document.getElementById("fyLabel").textContent = fiscalYearLabel(fyStartMonth);
   const isBusiness = yearlyLedger === "business";
   const fyMonths = new Set(fiscalYearMonths(fyStartMonth));
-  const fyTx = db.transactions.filter((t) => fyMonths.has(monthKey(t.date)) && (t.bucket || "personal") === yearlyLedger && !isTransferTx(t));
+  const fyTx = db.transactions.filter((t) => fyMonths.has(monthKey(t.date)) && (t.bucket || "personal") === yearlyLedger && countsInTotals(t));
 
   const income = fyTx.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
   const expense = fyTx.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0);
@@ -2003,7 +2036,7 @@ function renderFyBar() {
   const wrap = document.getElementById("fyBarWrap");
   const months = fiscalYearMonths(fyStartMonth);
   const data = months.map((m) => {
-    const tx = db.transactions.filter((t) => monthKey(t.date) === m && (t.bucket || "personal") === yearlyLedger && !isTransferTx(t));
+    const tx = db.transactions.filter((t) => monthKey(t.date) === m && (t.bucket || "personal") === yearlyLedger && countsInTotals(t));
     return { month: m, income: tx.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0), expense: tx.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0) };
   });
   const max = Math.max(1, ...data.map((d) => Math.max(d.income, d.expense)));
@@ -2030,7 +2063,7 @@ function renderFyBudgets(fyMonths) {
   const fyBudgets = db.budgets.filter((b) => fyMonths.has(b.month));
   const catIdsWithBudget = new Set(fyBudgets.map((b) => b.categoryId));
   if (catIdsWithBudget.size === 0) { wrap.innerHTML = `<div class="empty-state">No budgets set for any month in this fiscal year.</div>`; return; }
-  const fyExpenseTx = db.transactions.filter((t) => t.type === "expense" && fyMonths.has(monthKey(t.date)) && (t.bucket || "personal") === "personal" && !isTransferTx(t));
+  const fyExpenseTx = db.transactions.filter((t) => t.type === "expense" && fyMonths.has(monthKey(t.date)) && (t.bucket || "personal") === "personal" && countsInTotals(t));
   let totalBudget = 0, totalSpent = 0;
   const rows = expenseCats.filter((c) => catIdsWithBudget.has(c.id)).map((cat) => {
     const budgetTotal = fyBudgets.filter((b) => b.categoryId === cat.id).reduce((s, b) => s + b.amount, 0);
@@ -2125,6 +2158,7 @@ document.getElementById("catForm").addEventListener("submit", (e) => {
   const type = document.getElementById("catType").value;
   const color = document.getElementById("catColor").value;
   const parentId = document.getElementById("catParent").value || null;
+  const exclude = document.getElementById("catExclude").checked;
   if (!name) return;
   if (parentId === editId) { alert("A category can't be its own parent."); return; }
   if (editId) {
@@ -2134,12 +2168,12 @@ document.getElementById("catForm").addEventListener("submit", (e) => {
       if (cat.type !== type && hasOwnChildren) { alert("This category has subcategories — change their type first, or leave the type unchanged."); return; }
       if (parentId && hasOwnChildren) { alert("This category already has subcategories, so it can't become a subcategory itself. Move or delete its subcategories first."); return; }
       const groupChanged = cat.type !== type || (cat.parentId || null) !== (parentId || null);
-      cat.name = name; cat.color = color;
+      cat.name = name; cat.color = color; cat.excludeFromTotals = exclude;
       if (groupChanged) { cat.type = type; cat.parentId = parentId; cat.order = nextCategoryOrder(type, parentId, cat.bucket); }
     }
     toast("Category updated");
   } else {
-    db.categories.push({ id: uid(), name, type, bucket: categoriesLedger, color, parentId, order: nextCategoryOrder(type, parentId, categoriesLedger) });
+    db.categories.push({ id: uid(), name, type, bucket: categoriesLedger, color, parentId, order: nextCategoryOrder(type, parentId, categoriesLedger), excludeFromTotals: exclude });
     toast("Category added");
   }
   saveData();
@@ -2167,6 +2201,7 @@ function editCategory(id) {
   document.getElementById("catName").value = cat.name;
   document.getElementById("catType").value = cat.type;
   document.getElementById("catColor").value = cat.color;
+  document.getElementById("catExclude").checked = !!cat.excludeFromTotals;
   populateCatParentSelect();
   document.getElementById("catParent").value = cat.parentId || "";
   document.getElementById("catFormTitle").textContent = "Edit Category";
@@ -2223,7 +2258,7 @@ function renderCategoriesView() {
     const isFirst = idx === 0;
     const isLast = idx === siblings.length - 1;
     return `<div class="cat-list-item" style="${indent ? "margin-left:26px;" : ""}">
-    <label class="cat-badge"><input type="checkbox" class="cat-checkbox" ${selectedCatIds.has(c.id) ? "checked" : ""} onchange="toggleCatSelect('${c.id}', this.checked)"><span class="cat-dot" style="background:${c.color}"></span>${c.name}</label>
+    <label class="cat-badge"><input type="checkbox" class="cat-checkbox" ${selectedCatIds.has(c.id) ? "checked" : ""} onchange="toggleCatSelect('${c.id}', this.checked)"><span class="cat-dot" style="background:${c.color}"></span>${c.name}${c.excludeFromTotals ? `<span class="cat-hint" style="margin-left:8px;" title="Transactions here are skipped by Income and Expenses, but still change your account balance.">not counted</span>` : ""}</label>
     <span class="row-actions">
       <button class="icon-link" ${isFirst ? "disabled" : ""} onclick="moveCategory('${c.id}','up')" title="Move up">↑</button>
       <button class="icon-link" ${isLast ? "disabled" : ""} onclick="moveCategory('${c.id}','down')" title="Move down">↓</button>
@@ -2253,7 +2288,7 @@ function renderCategoriesView() {
 /* ===================== Cloud Sync (Google Sheets) ===================== */
 
 const SHEET_TABS = {
-  Categories: ["id", "name", "type", "color", "parentId", "order", "bucket"],
+  Categories: ["id", "name", "type", "color", "parentId", "order", "bucket", "excludeFromTotals"],
   Accounts: ["id", "name", "type", "openingBalance", "openingDate", "color", "bucket"],
   Transactions: ["id", "type", "date", "accountId", "categoryId", "amount", "description", "isReconciliation", "bucket", "transferId", "ref", "panel", "credits"],
   Budgets: ["id", "categoryId", "month", "amount"],
@@ -2350,7 +2385,10 @@ async function readAllFromSheet() {
 }
 
 function coerceTypesFromSheet(raw) {
-  const categories = raw.Categories.filter((r) => r.id).map((r) => ({ id: r.id, name: r.name, type: r.type, color: r.color, parentId: r.parentId ? r.parentId : null, order: r.order !== "" && r.order !== undefined && r.order !== null ? Number(r.order) : undefined, bucket: r.bucket || "personal" }));
+  const categories = raw.Categories.filter((r) => r.id).map((r) => ({ id: r.id, name: r.name, type: r.type, color: r.color, parentId: r.parentId ? r.parentId : null, order: r.order !== "" && r.order !== undefined && r.order !== null ? Number(r.order) : undefined, bucket: r.bucket || "personal",
+    /* Missing column (a sheet written before this field existed) yields undefined -> false. Same
+       string-compare pattern as isReconciliation, proven in production since July (Section 3.12). */
+    excludeFromTotals: String(r.excludeFromTotals).toUpperCase() === "TRUE" }));
   const accounts = raw.Accounts.filter((r) => r.id).map((r) => ({ id: r.id, name: r.name, type: r.type, openingBalance: parseFloat(r.openingBalance) || 0, openingDate: r.openingDate, color: r.color, bucket: r.bucket || "personal" }));
   const transactions = raw.Transactions.filter((r) => r.id).map((r) => ({ id: r.id, type: r.type, date: r.date, accountId: r.accountId, categoryId: r.categoryId, amount: parseFloat(r.amount) || 0, description: r.description || "", isReconciliation: String(r.isReconciliation).toUpperCase() === "TRUE", bucket: r.bucket || "personal", transferId: r.transferId ? String(r.transferId) : "", ref: r.ref ? String(r.ref) : "", panel: r.panel ? String(r.panel) : "", credits: Number(r.credits) > 0 ? Number(r.credits) : 0 }));
   const budgets = raw.Budgets.filter((r) => r.id).map((r) => ({ id: r.id, categoryId: r.categoryId, month: r.month, amount: parseFloat(r.amount) || 0 }));

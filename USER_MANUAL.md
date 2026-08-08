@@ -235,6 +235,53 @@ If a sale has no Ref and no Credits, the app can't work out its cost, so it's li
 
 ---
 
+## 9b. Lending Money to People
+
+When you lend someone money and they pay you back, **neither side is income or an expense**. Lending isn't spending — that money is still yours, just in someone else's pocket for a while. Getting it back isn't earning.
+
+Before, both sides were counted, so your Income and Expenses were both too high.
+
+### The fix — tick a box, once
+
+1. Go to **Categories**
+2. Click **Edit** on your "Loan Given" category
+3. Tick **"Don't count as income or expense"** → Save
+4. Do the same for "Loan return"
+
+That's it. You never touch it again, and every new loan you record is handled automatically.
+
+**It fixes your old entries too.** As soon as you tick the box, every past month is corrected — nothing to re-enter.
+
+### What changes and what doesn't
+
+| | |
+|---|---|
+| Income and Expenses | corrected ✅ |
+| Savings Rate | corrected ✅ |
+| Loans in the spending chart | gone ✅ |
+| **Your account balances** | **completely unchanged** — the money really did leave |
+| Your loan entries | still there in the list, untouched |
+
+Flagged categories show a small **"not counted"** label in the Categories list, so you can always see which ones are set.
+
+### Knowing who still owes you
+
+If money you've lent hasn't come back yet, the **Accounts** tab shows a line under Total Balance:
+
+> **Lent out, not yet returned: Rs 3,000**
+
+It appears only when something is actually outstanding, and disappears once everyone has paid you back.
+
+### If someone never pays you back
+
+At some point an unpaid loan stops being a loan and becomes a real loss. Only you can decide when. When you do, just **edit that one transaction and change its category** to a normal expense — then it counts properly as money lost.
+
+### This works for anything of the same shape
+
+Not just loans — any money that passes through your account without being earned or spent. Money you're holding for someone else, a deposit you'll get back, cash you're passing on. Give it its own category and tick the box.
+
+---
+
 ## 10. Backup and Restore
 
 At the bottom of the sidebar:
