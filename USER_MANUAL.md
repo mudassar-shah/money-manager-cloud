@@ -282,6 +282,51 @@ Not just loans — any money that passes through your account without being earn
 
 ---
 
+## 9c. Things You Paid For Before You Started Using This App
+
+You started tracking in July. But you paid a whole year's school fees back in January, and your business was running for months before that too.
+
+You still want each month's fee to show as an expense in **that** month — otherwise your monthly picture is wrong. But that money is long gone, and it can't come out of UBL or Cash now, because the balance you entered for those accounts in July **already** reflects that earlier spending.
+
+### The setup
+
+Make an account called something like **"Previously Paid"**, and log those expenses against it. Each month's fee then appears properly in your expenses, without touching your real accounts.
+
+The only snag was that this account keeps going more and more negative, and that dragged down your Total Balance — even though it isn't a real loss.
+
+### The fix — one click
+
+On the **Accounts** tab, each account card now has an **"Exclude from total"** button.
+
+Click it on your "Previously Paid" account and it stops being counted in Total Balance. Click again ("Include in total") to undo. New accounts can also be set up this way with a tickbox on the Add Account form.
+
+Flagged accounts show a small **"not in total"** label so you can always tell.
+
+### What changes
+
+| | |
+|---|---|
+| **Total Balance** | no longer dragged down ✅ |
+| **Your expenses** | **still counted in full** — that's the whole point |
+| Spending chart, budgets, Yearly Report | unchanged |
+| The account itself | still listed, still shows its own balance |
+| Reconcile | works exactly as before |
+
+### This works for the business too
+
+Same button, same behaviour. Flag a business "Previously Paid" account and **Total Business Balance** stops counting it, while the expenses still show in your business figures.
+
+### Don't confuse this with the loan tickbox
+
+They do opposite jobs:
+
+| | Loan **category** (Section 9b) | Previously-paid **account** (this one) |
+|---|---|---|
+| Counts as an expense? | **No** | **Yes** |
+| Counts in Total Balance? | **Yes** | **No** |
+
+---
+
 ## 10. Backup and Restore
 
 At the bottom of the sidebar:

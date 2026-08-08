@@ -53,8 +53,9 @@ Two things about the move that were verified rather than assumed:
 
 ### 2.2 Account
 ```
-{ id, name, type: "bank" | "cash" | "savings" | "credit_card", openingBalance, openingDate, color, bucket: "personal" | "business" }
+{ id, name, type: "bank" | "cash" | "savings" | "credit_card", openingBalance, openingDate, color, bucket: "personal" | "business", excludeFromBalance?: true }
 ```
+- `excludeFromBalance` — boolean. When true this account's balance is left out of `totalNetWorth` (Section 3.13), while every transaction logged against it still counts in full toward income/expense reporting. Used for a "previously paid" holding account. Absent/false on ordinary accounts.
 
 ### 2.3 Transaction
 ```
@@ -351,6 +352,31 @@ i.e. lent out minus returned. Shown only when non-zero, so it stays invisible fo
 
 **Cloud Sync safety (verified before implementation, at the user's request).** `readAllFromSheet` maps columns **by name from the sheet's own header row**, not by position, so adding a column cannot shift or scramble existing data, and a sheet **without** the new column simply yields `undefined` → `false`, which is the correct default. `pushAllToSheet` clears `A:Z` before rewriting, so no stale column survives. The boolean is stored exactly like `isReconciliation`, a pattern already proven in production since July. Test 8.23 covers the backward-compatibility case explicitly.
 
+### 3.13 Accounts excluded from Total Balance — spending that predates tracking
+
+**The problem.** Tracking began in **July 2026** for both ledgers, but life and the business did not. A year of school fees was paid in January; business costs were settled months earlier. The user wants those costs to appear as expenses **in the month they relate to**, so the monthly picture is honest — but the money is already gone, and each real account's July opening balance *already reflects* that prior spending. Logging the expense against UBL or Cash would therefore subtract it a second time.
+
+The workaround is a holding account ("Pervious Paid"). It works, except its balance drifts ever more negative and drags down Total Balance, which is not a real loss — it is spending that happened before the app existed.
+
+**Confirmed with the user: the original lump-sum payments were never recorded**, because there is no pre-July data at all. So there is no double-counting; the negative balance is simply an artefact of the tracking start date.
+
+```
+totalNetWorth(bucket) = Σ accountCurrentBalance(a.id)
+                        for accounts where bucket matches AND NOT a.excludeFromBalance
+```
+
+**The exact mirror of Section 3.12**, and the two must not be confused:
+
+| | Excluded **category** (3.12) | Excluded **account** (3.13) |
+|---|---|---|
+| Counts in Income / Expenses? | **No** | **Yes** — that is the entire point |
+| Counts in Total Balance? | **Yes** | **No** |
+| Typical use | loans given and repaid | costs paid before tracking began |
+
+**Deliberately narrow scope.** Only `totalNetWorth` changes — the two places it is used, "Total Balance (Personal)" on the Accounts tab and "Total Business Balance" on the Business tab. Because that function is already bucket-filtered, **one flag serves both ledgers** with no extra work. Everything else keeps showing the account: it stays in the account list with its running balance (carrying a "not in total" badge), in the Dashboard/Business accounts overview, in the monthly carry-forward table, and in the Yearly Report account summary. Hiding it from those would destroy the record the user is deliberately keeping. `accountCurrentBalance` itself is untouched, so Reconcile and every per-account figure behave exactly as before.
+
+**An alternative that avoids the flag**, noted for completeness: fund the holding account with a **Transfer** (3.10) from the real account at the time of payment, so it starts positive and drains to zero as the expense is consumed, never going negative and showing the unconsumed prepayment as a genuine asset. This is the tidier model but only works when the original payment falls inside the tracking period — which, here, it does not.
+
 ---
 
 ## 4. Business Rules / Invariants (must hold at all times)
@@ -373,7 +399,7 @@ Your Google Sheet has one tab per entity. The exact columns, in order, that get 
 | Sheet tab | Columns |
 |---|---|
 | `Categories` | `id, name, type, color, parentId, order, bucket, excludeFromTotals` |
-| `Accounts` | `id, name, type, openingBalance, openingDate, color, bucket` |
+| `Accounts` | `id, name, type, openingBalance, openingDate, color, bucket, excludeFromBalance` |
 | `Transactions` | `id, type, date, accountId, categoryId, amount, description, isReconciliation, bucket, transferId, ref, panel, credits` |
 | `Budgets` | `id, categoryId, month, amount` |
 | `Reconciliations` | `id, accountId, date, actualBalance, computedBefore, diff` |
@@ -438,6 +464,17 @@ When a new field is added to categories, accounts, or transactions (like `parent
 **8.15 Net This Month stat** — add income and expense transactions in the same month, confirm "Net This Month" equals Income − Expense exactly; switch months and confirm it recalculates per month; confirm the Business tab's 4-card stat grid is unaffected (still `repeat(4, 1fr)` on desktop) and its "Net Profit" figure is untouched.
 
 **8.16 Total Balance moved to Accounts** — confirm the Dashboard has exactly 4 stat cards (Income, Expenses, Net This Month, Savings Rate) and no Total Balance card anywhere on it; confirm the Accounts tab's "Your Accounts" card shows "Total Balance (Personal)" matching the sum of personal accounts' `accountCurrentBalance`, and that it excludes any business accounts even though the account list below it shows both; confirm switching Dashboard months does not affect the Accounts tab figure at all (it's not month-scoped); confirm the Business tab's "Total Business Balance" is untouched.
+
+**8.24 Accounts excluded from Total Balance (Section 3.13)** — the risk is scope creep: this must change **one** figure and nothing else.
+- **Backward compatibility first** (live data is Sheets-only): feed `coerceTypesFromSheet` an Accounts set with the **old 7-column header**. Confirm every account loads with `openingBalance` as a number, `openingDate`, `color` and `bucket` intact, and the absent flag becoming `false` — never `undefined` or `NaN`.
+- Flag a personal account and confirm **Total Balance (Personal)** drops by exactly that account's balance; flag a business account and confirm **Total Business Balance** does the same. One flag must serve both ledgers.
+- **Confirm nothing else moves**: Dashboard Income/Expenses, the donut, budgets, the Yearly Report totals, and every *per-account* balance must be byte-identical before and after flagging.
+- Confirm expenses logged against a flagged account **still count** in Income/Expenses and still appear in the spending donut — this is the whole purpose and the opposite of 8.23.
+- Confirm the flagged account still appears in the account list with its own balance and a "not in total" badge, in the Dashboard/Business accounts overview, in the carry-forward table, and in the Yearly Report account summary.
+- Confirm Reconcile on a flagged account still computes from its own balance correctly (`accountCurrentBalance` must be untouched).
+- Confirm a flagged account with a **negative** balance no longer drags Total Balance down, which is the reported symptom.
+- **Round-trip (8.7)**: flag an account, push, read back, confirm the flag survives as a boolean and no other account field changed value or type.
+- Confirm unflagging restores the original Total Balance exactly.
 
 **8.23 Excluded categories (Section 3.12)** — the user's live data exists only in Google Sheets, so backward compatibility is the priority test, not an afterthought:
 - **Backward compatibility (do this first)**: feed `coerceTypesFromSheet` a Categories set with the **old 7-column header** (no `excludeFromTotals`). Confirm every category still loads with `id`, `name`, `type`, `color`, `parentId`, `order` and `bucket` intact, and that the missing flag becomes `false` — never `undefined`, `NaN` or the string `"undefined"`.
@@ -629,6 +666,12 @@ This mobile layout work applies to the **Cloud** copy first, since that's the on
 - **Action required**: on the live site, select the existing Rs 20,000 pair (the UBL "Cash Withdrawal" expense and the Cash "Cash Deposite" income, both dated 2026-08-02) and use **Mark as Transfer** — August's Income should drop from Rs 214,553 to Rs 194,553, Expenses by Rs 20,000, and Savings Rate rise to about 53.2%, with both account balances unchanged.
 - **2026-07-30 (hosting moved from Netlify to GitHub Pages)** — The Cloud copy is now live at **<https://mudassar-shah.github.io/money-manager-cloud/>**, served by GitHub Pages from the `mudassar-shah/money-manager-cloud` repository (branch `main`). Netlify is no longer used: its free plan meters "credits" against deploy activity, and iterating on the app in a single day could consume a large share of the monthly allowance, while GitHub Pages has no equivalent limit for a static site. The old `peppy-lily-416823.netlify.app` URL is abandoned. Deployment is now "upload/push to the repo and it publishes itself" instead of a manual folder-drag — which also removes the recurring partial-upload hazard noted in the session backup, where Netlify Drop once uploaded only the dragged file and left `manifest.json`, `sw.js` and the three icons 404ing on the live site.
   Section 1.1 added to record the URL, the hosting mechanism and two things that were checked rather than assumed: (a) GitHub Pages serves from a **subpath** (`/money-manager-cloud/`) rather than a domain root, and every asset reference in the app is already relative (`manifest.json`, `apple-touch-icon.png`, `register("sw.js")`, the manifest's `./` start_url/scope/icons, and `sw.js`'s `./` SHELL_FILES), so the PWA, install prompt, icons and offline caching all work unchanged — these must never be converted to absolute `/…` paths, which would break on a subpath while looking correct on a root domain; and (b) Cloud Sync requires `https://mudassar-shah.github.io` to be added to the OAuth 2.0 Client ID's **Authorized JavaScript origins** in Google Cloud Console, since sign-in uses `google.accounts.oauth2.initTokenClient` which validates the page origin — without it, "Sign in with Google" fails on an origin mismatch. **No application code was changed for this migration.** Also corrected the Section 1 table, which still listed the three copies under stale `E:\Claude\…` paths; they are and have been under `D:\`. Change Log entries dated before 2026-07-30 refer to Netlify redeploys as accurate history, not live instructions.
+- **2026-08-08 (accounts excluded from Total Balance — spending that predates tracking)** — Tracking began July 2026 for both ledgers, but a year of school fees was paid in January and the business ran for months before. The user logs those costs against a "Pervious Paid" holding account so each month's expense is honest, but that account drifts negative and drags Total Balance down — which is not a real loss, just an artefact of the start date. **Confirmed with the user that the original lump sums were never recorded** (there is no pre-July data at all), so there is no double-counting. Added `excludeFromBalance` on **Account** (Section 3.13).
+  - **The exact mirror of 3.12**, and the two must not be confused: an excluded *category* is skipped by income/expense but kept in balances; an excluded *account* is skipped by Total Balance but its transactions still count fully as income/expense — which is the entire point.
+  - **Deliberately narrow**: only `totalNetWorth` changed, so exactly two figures move — "Total Balance (Personal)" and "Total Business Balance". Because that function is already bucket-filtered, **one flag serves both ledgers** with no extra work. `accountCurrentBalance` is untouched, so per-account balances, the carry-forward table, the Yearly Report account summary and Reconcile all behave identically. The account stays visible everywhere with a "not in total" badge — hiding it would destroy the record the user is deliberately keeping.
+  - **Caught during implementation**: accounts have **no edit form** (only add/delete, and delete is blocked once transactions exist), so an existing holding account could never have been flagged. Added an "Exclude from total" / "Include in total" toggle directly on the account card, alongside a tickbox on the Add Account form for new ones.
+  - Verified: an **old 7-column Accounts sheet** loads with `openingBalance` numeric, `openingDate`, `color` and `bucket` intact and the absent flag becoming `false` as a real boolean. Behaviourally, Total Balance went 141,982 → **150,000** and Total Business Balance 35,000 → **40,000**, while Income, Expenses (Rs 8,018 both sides), the spending donut, the Yearly Report, every per-account balance and the whole carry-forward table were **byte-identical before and after**; the account stayed listed, the badge rendered, and unflagging restored the originals exactly. Round-trip passed on all four accounts with every field surviving. Zero errors.
+  - Mirrored into the PC and iPhone copies; marker counts reconcile with the two Cloud-only differences confirmed to be the sync schema and sync reader lines. The iPhone copy was **functionally executed**, all 10 checks passing, then deleted from the upload folder.
 - **2026-08-08 (excluded categories — loans given and repaid)** — User lends money from UBL and is repaid into UBL; both legs were counted, overstating July Income *and* Expenses by Rs 6,000 each while the balance stayed correct. Verified first that the transfer mechanism (3.10) **cannot** solve this: `Mark as Transfer` requires two *different* accounts and a loan returns to the same one, and pairing would wrongly treat an unrepaid loan as an expense and break outright on a partial repayment. Added `excludeFromTotals` on **Category** — a tickbox "Don't count as income or expense" (Section 3.12).
   - Because the flag lives on the category, it is **retroactive with no data migration**: the user had already filed these under dedicated categories, so ticking two boxes corrects July and every earlier month instantly. Partial and late repayments need no special handling; an unrepaid loan correctly stays out of expenses because the money is still owed, not spent.
   - The nine reporting filters that previously read `!isTransferTx(t)` now share one predicate, **`countsInTotals(t)`**, so the transfer rule and the exclusion rule can never drift apart. Balance functions deliberately still count both.

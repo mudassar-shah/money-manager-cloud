@@ -339,6 +339,10 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
           <label>Color
             <input type="color" id="accColor" value="#3b82f6">
           </label>
+          <label style="flex-direction:row;align-items:center;gap:6px;font-weight:400;">
+            <input type="checkbox" id="accExclude" style="width:auto;min-width:0;">
+            <span>Don't include in Total Balance</span>
+          </label>
           <button type="submit" class="primary-btn">Add Account</button>
         </form>
       </div>
@@ -987,7 +991,10 @@ function accountNet(accountId, filterFn) { return db.transactions.filter((t) => 
 function accountCurrentBalance(accountId) { const acc = getAccount(accountId); if (!acc) return 0; return round2(acc.openingBalance + accountNet(accountId)); }
 function accountBalanceAsOf(accountId, dateStr) { const acc = getAccount(accountId); if (!acc) return 0; return round2(acc.openingBalance + accountNet(accountId, (t) => t.date <= dateStr)); }
 function accountBalanceBefore(accountId, dateStr) { const acc = getAccount(accountId); if (!acc) return 0; return round2(acc.openingBalance + accountNet(accountId, (t) => t.date < dateStr)); }
-function totalNetWorth(bucket) { return round2(db.accounts.filter((a) => (a.bucket || "personal") === (bucket || "personal")).reduce((sum, a) => sum + accountCurrentBalance(a.id), 0)); }
+/* Skips accounts flagged "don't include in Total Balance" — holding accounts for spending that
+   predates tracking (Section 3.13). accountCurrentBalance itself is deliberately untouched, so every
+   per-account figure, the carry-forward table and Reconcile all behave exactly as before. */
+function totalNetWorth(bucket) { return round2(db.accounts.filter((a) => (a.bucket || "personal") === (bucket || "personal") && !a.excludeFromBalance).reduce((sum, a) => sum + accountCurrentBalance(a.id), 0)); }
 function lastReconciledDate(accountId) { const recs = db.reconciliations.filter((r) => r.accountId === accountId).sort((a, b) => (a.date < b.date ? 1 : -1)); return recs.length ? recs[0].date : null; }
 
 let toastTimer = null;
@@ -1229,7 +1236,7 @@ document.getElementById("accountForm").addEventListener("submit", (e) => {
   const openingDate = document.getElementById("accOpeningDate").value || todayISO();
   const color = document.getElementById("accColor").value;
   if (!name) return;
-  db.accounts.push({ id: uid(), name, bucket, type, openingBalance, openingDate, color });
+  db.accounts.push({ id: uid(), name, bucket, type, openingBalance, openingDate, color, excludeFromBalance: document.getElementById("accExclude").checked });
   saveData();
   e.target.reset();
   document.getElementById("accColor").value = "#3b82f6";
@@ -1245,6 +1252,16 @@ function deleteAccount(id) {
   db.reconciliations = db.reconciliations.filter((r) => r.accountId !== id);
   saveData(); renderAccountsView(); renderAll();
   toast("Account deleted");
+}
+/* Accounts have no edit form (only add/delete, and delete is blocked once transactions exist), so an
+   existing holding account could otherwise never be flagged. Toggles straight from the card (3.13). */
+function toggleAccountExclude(accountId) {
+  const acc = getAccount(accountId);
+  if (!acc) return;
+  acc.excludeFromBalance = !acc.excludeFromBalance;
+  saveData();
+  renderAccountsView(); renderAll();
+  toast(acc.excludeFromBalance ? `"${acc.name}" is no longer counted in Total Balance` : `"${acc.name}" is counted in Total Balance again`);
 }
 function toggleReconcile(accountId) { expandedReconcileAccountId = expandedReconcileAccountId === accountId ? null : accountId; renderAccountsView(); }
 function ensureAdjustmentCategory(type, bucket) {
@@ -1287,11 +1304,12 @@ function renderAccountsView() {
       return `<div class="account-card">
         <div class="account-card-top">
           <div>
-            <div class="account-name-row"><span class="cat-dot" style="background:${a.color}"></span>${a.name}<span class="account-type-badge">${accountTypeLabel(a.type)}</span><span class="account-type-badge">${a.bucket === "business" ? "Business" : "Personal"}</span></div>
+            <div class="account-name-row"><span class="cat-dot" style="background:${a.color}"></span>${a.name}<span class="account-type-badge">${accountTypeLabel(a.type)}</span><span class="account-type-badge">${a.bucket === "business" ? "Business" : "Personal"}</span>${a.excludeFromBalance ? `<span class="account-type-badge" title="This account's balance is left out of Total Balance. Its transactions still count as income/expense.">not in total</span>` : ""}</div>
             <div class="account-balance amount ${bal < 0 ? "expense" : "income"}">${fmtMoney(bal)}</div>
             <div class="account-meta">${lastRec ? "Last reconciled: " + lastRec : "Not reconciled yet"}</div>
           </div>
           <div class="account-actions">
+            <button class="icon-link" onclick="toggleAccountExclude('${a.id}')" title="Accounts can't be edited, so this toggles directly from the card.">${a.excludeFromBalance ? "Include in total" : "Exclude from total"}</button>
             <button class="icon-link" onclick="toggleReconcile('${a.id}')">${isOpen ? "Cancel" : "Reconcile"}</button>
             <button class="icon-link danger" onclick="deleteAccount('${a.id}')">Delete</button>
           </div>
@@ -2289,7 +2307,7 @@ function renderCategoriesView() {
 
 const SHEET_TABS = {
   Categories: ["id", "name", "type", "color", "parentId", "order", "bucket", "excludeFromTotals"],
-  Accounts: ["id", "name", "type", "openingBalance", "openingDate", "color", "bucket"],
+  Accounts: ["id", "name", "type", "openingBalance", "openingDate", "color", "bucket", "excludeFromBalance"],
   Transactions: ["id", "type", "date", "accountId", "categoryId", "amount", "description", "isReconciliation", "bucket", "transferId", "ref", "panel", "credits"],
   Budgets: ["id", "categoryId", "month", "amount"],
   Reconciliations: ["id", "accountId", "date", "actualBalance", "computedBefore", "diff"],
@@ -2389,7 +2407,9 @@ function coerceTypesFromSheet(raw) {
     /* Missing column (a sheet written before this field existed) yields undefined -> false. Same
        string-compare pattern as isReconciliation, proven in production since July (Section 3.12). */
     excludeFromTotals: String(r.excludeFromTotals).toUpperCase() === "TRUE" }));
-  const accounts = raw.Accounts.filter((r) => r.id).map((r) => ({ id: r.id, name: r.name, type: r.type, openingBalance: parseFloat(r.openingBalance) || 0, openingDate: r.openingDate, color: r.color, bucket: r.bucket || "personal" }));
+  const accounts = raw.Accounts.filter((r) => r.id).map((r) => ({ id: r.id, name: r.name, type: r.type, openingBalance: parseFloat(r.openingBalance) || 0, openingDate: r.openingDate, color: r.color, bucket: r.bucket || "personal",
+    /* Missing column (a sheet written before this field existed) yields undefined -> false (Section 3.13). */
+    excludeFromBalance: String(r.excludeFromBalance).toUpperCase() === "TRUE" }));
   const transactions = raw.Transactions.filter((r) => r.id).map((r) => ({ id: r.id, type: r.type, date: r.date, accountId: r.accountId, categoryId: r.categoryId, amount: parseFloat(r.amount) || 0, description: r.description || "", isReconciliation: String(r.isReconciliation).toUpperCase() === "TRUE", bucket: r.bucket || "personal", transferId: r.transferId ? String(r.transferId) : "", ref: r.ref ? String(r.ref) : "", panel: r.panel ? String(r.panel) : "", credits: Number(r.credits) > 0 ? Number(r.credits) : 0 }));
   const budgets = raw.Budgets.filter((r) => r.id).map((r) => ({ id: r.id, categoryId: r.categoryId, month: r.month, amount: parseFloat(r.amount) || 0 }));
   const reconciliations = raw.Reconciliations.filter((r) => r.id).map((r) => ({ id: r.id, accountId: r.accountId, date: r.date, actualBalance: parseFloat(r.actualBalance) || 0, computedBefore: parseFloat(r.computedBefore) || 0, diff: parseFloat(r.diff) || 0 }));
