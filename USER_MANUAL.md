@@ -161,7 +161,19 @@ Go to the **Yearly Report** tab. This shows a full financial year at a time, run
 - How each budget performed across the whole year.
 - Each account's opening and closing balance for the year.
 
-Use the arrows next to the year label to move to a previous or future year. This tab only ever shows **personal** data — your business numbers live separately in the Business tab.
+Use the arrows next to the year label to move to a previous or future year — as far back or forward as you like.
+
+**There's now a Personal / Business toggle at the top of this tab.** It works exactly like the one on the Transactions tab: you see one ledger at a time, never the two mixed together.
+
+Switch it to **Business** and you get the same yearly view for your business, on the same 1 July – 30 June year:
+
+- Total income, expenses and **Net Profit** for the year (labelled "Profit Margin" instead of "Savings Rate")
+- Business spending by category
+- Month-by-month chart
+- **Annual Profit by Sale / Deal** — every goods deal and IPTV sale for the whole year, with each one's real cost and margin
+- Opening and closing balances for your business accounts
+
+There's no budget section in Business mode, because business budgeting doesn't exist in the app.
 
 ---
 

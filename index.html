@@ -531,6 +531,10 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
           <button id="fyNext" class="icon-btn">&rsaquo;</button>
         </div>
       </header>
+      <div class="ledger-toggle" id="fyLedgerToggle">
+        <button class="ledger-btn active" data-bucket="personal" onclick="setYearlyLedger('personal')">Personal</button>
+        <button class="ledger-btn" data-bucket="business" onclick="setYearlyLedger('business')">Business</button>
+      </div>
       <p class="hint">Pakistan-style fiscal year: 1 July to 30 June.</p>
 
       <div class="stat-cards">
@@ -545,12 +549,12 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
           <div class="stat-sub">Full fiscal year</div>
         </div>
         <div class="card stat">
-          <div class="stat-label">Net Savings</div>
+          <div class="stat-label" id="fyNetLabel">Net Savings</div>
           <div class="stat-value" id="fyNet">-</div>
           <div class="stat-sub">Income minus expenses</div>
         </div>
         <div class="card stat">
-          <div class="stat-label">Savings Rate</div>
+          <div class="stat-label" id="fyRateLabel">Savings Rate</div>
           <div class="stat-value" id="fySavingsRate">-</div>
           <div class="stat-sub">Full fiscal year</div>
         </div>
@@ -567,10 +571,24 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
         </div>
       </div>
 
-      <div class="card">
+      <div class="card" id="fyBudgetCard">
         <h2>Annual Budget vs Actual</h2>
         <p class="hint">Sums each category's monthly budgets across the fiscal year and compares to what you actually spent.</p>
         <div id="fyBudgetWrap" class="budget-progress-wrap"></div>
+      </div>
+
+      <div class="card" id="fyDealCard" style="display:none;">
+        <h2>Annual Profit by Sale / Deal</h2>
+        <p class="hint">Every deal whose sale falls in this fiscal year, costed the same way as the Business tab — goods grouped by Ref, IPTV costed from the credits used.</p>
+        <div class="table-wrap">
+          <table class="tx-table">
+            <thead>
+              <tr><th>Date</th><th>Deal</th><th class="right">Income</th><th class="right">Cost</th><th class="right">Profit</th><th class="right">Margin</th></tr>
+            </thead>
+            <tbody id="fyDealBody"></tbody>
+          </table>
+        </div>
+        <div id="fyDealNote" class="hint" style="margin:10px 0 0;"></div>
       </div>
 
       <div class="card">
@@ -1479,9 +1497,12 @@ function creditCostForSale(tx, allocations) {
 
 /* Deals whose SALE falls in the given month. Costs are pulled in from ANY month, otherwise a deal
    whose vendor was paid in a different month would report a false profit (Section 3.11c). */
-function buildDeals(month, allocations) {
+/* `period` is either a single "YYYY-MM" (Business tab) or a Set of months (a fiscal year). Costs are
+   still pulled from ANY month either way — only which SALES qualify is scoped. */
+function buildDeals(period, allocations) {
+  const inPeriod = (date) => (period instanceof Set ? period.has(monthKey(date)) : monthKey(date) === period);
   const all = bizTx();
-  const salesThisMonth = all.filter((t) => t.type === "income" && monthKey(t.date) === month);
+  const salesThisMonth = all.filter((t) => t.type === "income" && inPeriod(t.date));
   const deals = [];
   const usedRefs = new Set();
 
@@ -1529,14 +1550,16 @@ function updateBizDetailRow() {
   document.getElementById("panelSuggestions").innerHTML = creditPanels().map((p) => `<option value="${p}"></option>`).join("");
 }
 
-function renderBizDeals() {
-  const body = document.getElementById("bizDealBody");
-  const note = document.getElementById("bizDealNote");
+/* One renderer for both the Business tab's monthly card and the Yearly Report's annual card, so the
+   two can never drift apart. `period` is a month string or a Set of months. */
+function renderDealTable(bodyId, noteId, period, emptyText) {
+  const body = document.getElementById(bodyId);
+  const note = document.getElementById(noteId);
   const allocations = allCreditAllocations();
-  const { deals, unattributed } = buildDeals(bizMonth, allocations);
+  const { deals, unattributed } = buildDeals(period, allocations);
 
   if (deals.length === 0) {
-    body.innerHTML = `<tr><td colspan="6" class="empty-state">No sales with a Ref or Credits this month. Add a Ref to a goods deal, or Panel + Credits to an IPTV sale, to see its profit here.</td></tr>`;
+    body.innerHTML = `<tr><td colspan="6" class="empty-state">${emptyText}</td></tr>`;
   } else {
     body.innerHTML = deals.map((d) => {
       const parts = [];
@@ -1557,9 +1580,19 @@ function renderBizDeals() {
       `<td class="amount ${t.profit < 0 ? "expense" : "income"}"><strong>${fmtMoney(round2(t.profit))}</strong></td>` +
       `<td class="amount"><strong>${totalMargin === null ? "—" : totalMargin.toFixed(1) + "%"}</strong></td></tr>`;
   }
+  const span = period instanceof Set ? "this fiscal year" : "this month";
   note.innerHTML = unattributed.count > 0
-    ? `${unattributed.count} other business sale${unattributed.count === 1 ? "" : "s"} this month (${fmtMoney(unattributed.amount)}) ${unattributed.count === 1 ? "has" : "have"} no Ref and no Credits, so no cost can be attributed — ${unattributed.count === 1 ? "it is" : "they are"} not included above.`
+    ? `${unattributed.count} other business sale${unattributed.count === 1 ? "" : "s"} ${span} (${fmtMoney(unattributed.amount)}) ${unattributed.count === 1 ? "has" : "have"} no Ref and no Credits, so no cost can be attributed — ${unattributed.count === 1 ? "it is" : "they are"} not included above.`
     : "";
+}
+
+function renderBizDeals() {
+  renderDealTable("bizDealBody", "bizDealNote", bizMonth,
+    "No sales with a Ref or Credits this month. Add a Ref to a goods deal, or Panel + Credits to an IPTV sale, to see its profit here.");
+}
+function renderFyDeals(fyMonths) {
+  renderDealTable("fyDealBody", "fyDealNote", fyMonths,
+    "No sales with a Ref or Credits in this fiscal year.");
 }
 
 function renderBizStock() {
@@ -1897,27 +1930,46 @@ function setBudget(categoryId, value) {
 
 /* ================= YEARLY REPORT ================= */
 let fyStartMonth = fiscalYearStartOf(monthKey(todayISO()));
+/* Which ledger the Yearly Report is showing — one at a time, never mixed (Section 3.7, rule 2).
+   This value must be threaded explicitly into EVERY fiscal-year query; a function that quietly
+   defaults to "personal" is exactly how business data leaked into personal totals three times
+   on 2026-07-07. Test 8.22 guards this. */
+let yearlyLedger = "personal";
 document.getElementById("fyPrev").addEventListener("click", () => { fyStartMonth = shiftMonth(fyStartMonth, -12); renderYearlyView(); });
 document.getElementById("fyNext").addEventListener("click", () => { fyStartMonth = shiftMonth(fyStartMonth, 12); renderYearlyView(); });
 
+function setYearlyLedger(bucket) {
+  yearlyLedger = bucket;
+  document.querySelectorAll("#fyLedgerToggle .ledger-btn").forEach((b) => b.classList.toggle("active", b.dataset.bucket === bucket));
+  renderYearlyView();
+}
+
 function renderYearlyView() {
   document.getElementById("fyLabel").textContent = fiscalYearLabel(fyStartMonth);
+  const isBusiness = yearlyLedger === "business";
   const fyMonths = new Set(fiscalYearMonths(fyStartMonth));
-  const fyTx = db.transactions.filter((t) => fyMonths.has(monthKey(t.date)) && (t.bucket || "personal") === "personal" && !isTransferTx(t));
+  const fyTx = db.transactions.filter((t) => fyMonths.has(monthKey(t.date)) && (t.bucket || "personal") === yearlyLedger && !isTransferTx(t));
 
   const income = fyTx.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
   const expense = fyTx.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0);
   const net = income - expense;
-  const savingsRate = income > 0 ? (net / income) * 100 : 0;
+  const rate = income > 0 ? (net / income) * 100 : 0;
 
   document.getElementById("fyIncome").textContent = fmtMoney(income);
   document.getElementById("fyExpense").textContent = fmtMoney(expense);
   document.getElementById("fyNet").textContent = fmtMoney(net);
-  document.getElementById("fySavingsRate").textContent = `${savingsRate.toFixed(1)}%`;
+  document.getElementById("fySavingsRate").textContent = `${rate.toFixed(1)}%`;
+  /* Same arithmetic, business-appropriate labels — matching the Business tab's naming (3.8). */
+  document.getElementById("fyNetLabel").textContent = isBusiness ? "Net Profit" : "Net Savings";
+  document.getElementById("fyRateLabel").textContent = isBusiness ? "Profit Margin" : "Savings Rate";
+
+  /* Business has no budgeting (Section 7); it gets the deal-profit card in that slot instead. */
+  document.getElementById("fyBudgetCard").style.display = isBusiness ? "none" : "";
+  document.getElementById("fyDealCard").style.display = isBusiness ? "" : "none";
 
   renderFyDonut(fyTx);
   renderFyBar();
-  renderFyBudgets(fyMonths);
+  if (isBusiness) renderFyDeals(fyMonths); else renderFyBudgets(fyMonths);
   renderFyAccounts();
 }
 
@@ -1951,7 +2003,7 @@ function renderFyBar() {
   const wrap = document.getElementById("fyBarWrap");
   const months = fiscalYearMonths(fyStartMonth);
   const data = months.map((m) => {
-    const tx = db.transactions.filter((t) => monthKey(t.date) === m && (t.bucket || "personal") === "personal" && !isTransferTx(t));
+    const tx = db.transactions.filter((t) => monthKey(t.date) === m && (t.bucket || "personal") === yearlyLedger && !isTransferTx(t));
     return { month: m, income: tx.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0), expense: tx.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0) };
   });
   const max = Math.max(1, ...data.map((d) => Math.max(d.income, d.expense)));
@@ -1994,11 +2046,11 @@ function renderFyBudgets(fyMonths) {
 
 function renderFyAccounts() {
   const wrap = document.getElementById("fyAccountBody");
-  const personalAccounts = db.accounts.filter((a) => (a.bucket || "personal") === "personal");
-  if (personalAccounts.length === 0) { wrap.innerHTML = `<tr><td colspan="5" class="empty-state">No accounts yet.</td></tr>`; return; }
+  const ledgerAccounts = db.accounts.filter((a) => (a.bucket || "personal") === yearlyLedger);
+  if (ledgerAccounts.length === 0) { wrap.innerHTML = `<tr><td colspan="5" class="empty-state">No ${yearlyLedger} accounts yet.</td></tr>`; return; }
   const fyStartDate = `${fyStartMonth}-01`;
   const fyEndExclusive = `${shiftMonth(fyStartMonth, 12)}-01`;
-  wrap.innerHTML = personalAccounts.map((a) => {
+  wrap.innerHTML = ledgerAccounts.map((a) => {
     const opening = accountBalanceBefore(a.id, fyStartDate);
     const closing = accountBalanceBefore(a.id, fyEndExclusive);
     const fyTx = db.transactions.filter((t) => t.accountId === a.id && t.date >= fyStartDate && t.date < fyEndExclusive);
