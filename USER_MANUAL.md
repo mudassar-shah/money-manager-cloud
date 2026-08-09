@@ -327,6 +327,55 @@ They do opposite jobs:
 
 ---
 
+## 9d. Moving Money Between Business and Personal
+
+Sometimes you take money out of the business, sometimes you put your own money in, and sometimes you just **borrow** from the business to cover something and pay it back later.
+
+There's a card on the **Accounts** tab called **Transfer Between Business and Personal**.
+
+```
+From:  Jazz cash (Business)
+To:    UBL (Personal)
+Amount: 30,000        Date: today
+```
+
+### What it does
+
+Say your business account has 100,000 and your personal UBL has 50,000, and you move 30,000:
+
+| | Before | After |
+|---|---|---|
+| Business account | 100,000 | **70,000** ⬇ |
+| Personal UBL | 50,000 | **80,000** ⬆ |
+| Business Income / Expenses / Net Profit | | **no change** |
+| Personal Income / Expenses / Savings Rate | | **no change** |
+
+**The rule: the money moves, the balances follow — but nobody earned anything and nobody spent anything.** It's your own money on both sides.
+
+### Borrowing works naturally
+
+Borrow from the business today, and repay it next month with a transfer the other way. Both balances simply return to where they were, and nothing ever pretended to be income or an expense.
+
+### Two separate forms — don't mix them up
+
+| Moving money… | Use |
+|---|---|
+| Between two **personal** accounts (UBL → Cash) | Transfer form on the **Transactions** tab |
+| Between two **business** accounts | Same form, with the toggle on Business |
+| **Business ↔ Personal** | This card on the **Accounts** tab |
+
+Each form refuses the other's job and tells you where to go, so you can't record it in the wrong place.
+
+### If you already entered one by hand
+
+Select the two rows on the Transactions tab and click **Mark as Transfer** — it now accepts business-to-personal pairs too. Both stop counting as income and expense, and no balance moves.
+
+### One thing to be aware of
+
+If you take profit out of the business permanently and always record it as a transfer, your personal Income won't include it — so your Savings Rate will look better than it really is. If you'd rather a withdrawal counted as personal income, just record it as an ordinary income transaction instead of using this form. You choose, each time.
+
+---
+
 ## 10. Backup and Restore
 
 At the bottom of the sidebar:

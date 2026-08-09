@@ -348,6 +348,33 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
       </div>
 
       <div class="card">
+        <h2>Transfer Between Business and Personal</h2>
+        <form id="crossForm" class="tx-form">
+          <div class="form-row">
+            <label>From Account
+              <select id="crossFrom" required></select>
+            </label>
+            <label>To Account
+              <select id="crossTo" required></select>
+            </label>
+            <label>Amount
+              <input type="number" id="crossAmount" step="0.01" min="0" required placeholder="0.00">
+            </label>
+            <label>Date
+              <input type="date" id="crossDate" required>
+            </label>
+          </div>
+          <div class="form-row">
+            <label class="grow">Description
+              <input type="text" id="crossDescription" placeholder="e.g. Borrowed from business">
+            </label>
+            <button type="submit" class="primary-btn">Transfer</button>
+          </div>
+        </form>
+        <p class="hint" style="margin:10px 0 0;">For moving your own money between your business and personal accounts — taking profit out, putting money in, or borrowing and repaying later. Both balances update, but nothing counts as income or expense on either side. The two accounts must be on opposite sides; for a transfer within the same side, use the Transactions tab.</p>
+      </div>
+
+      <div class="card">
         <h2>Your Accounts</h2>
         <div class="stat" style="margin-bottom:14px;">
           <div class="stat-label">Total Balance (Personal)</div>
@@ -1253,6 +1280,46 @@ function deleteAccount(id) {
   saveData(); renderAccountsView(); renderAll();
   toast("Account deleted");
 }
+/* ===== Business <-> Personal transfer (Section 3.14) =====
+   Deliberately separate from the Transactions-tab transfer form, which is left untouched: that one
+   is used constantly for same-ledger moves, this one rarely for cross-ledger. The defining
+   difference is that each half takes the bucket of ITS OWN account rather than any active toggle. */
+function populateCrossAccountSelect(selectEl) {
+  const groups = ["personal", "business"].map((b) => {
+    const accs = db.accounts.filter((a) => (a.bucket || "personal") === b);
+    if (!accs.length) return "";
+    const label = b === "personal" ? "Personal" : "Business";
+    return `<optgroup label="${label}">${accs.map((a) => `<option value="${a.id}">${a.name}</option>`).join("")}</optgroup>`;
+  }).join("");
+  selectEl.innerHTML = groups;
+}
+
+document.getElementById("crossForm").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const fromId = document.getElementById("crossFrom").value;
+  const toId = document.getElementById("crossTo").value;
+  const amount = parseFloat(document.getElementById("crossAmount").value);
+  const date = document.getElementById("crossDate").value;
+  const typed = document.getElementById("crossDescription").value.trim();
+  const from = getAccount(fromId), to = getAccount(toId);
+  if (!from || !to) { alert("Pick both a From and a To account."); return; }
+  if (fromId === toId) { alert("The From and To accounts must be different."); return; }
+  const fromBucket = from.bucket || "personal", toBucket = to.bucket || "personal";
+  if (fromBucket === toBucket) { alert(`Both accounts are on the ${fromBucket} side.\n\nThis form is only for moving money between business and personal. For a transfer within the same side, use the Transfer form on the Transactions tab.`); return; }
+  if (!date || isNaN(amount) || amount <= 0) { alert("Enter a date and a positive amount."); return; }
+  const description = typed || `Transfer: ${from.name} → ${to.name}`;
+  const transferId = uid();
+  /* Each half belongs to its own account's ledger — that is what makes this cross-ledger, and it
+     keeps each half wholly inside its own ledger's reports (Section 4 rule 2). */
+  db.transactions.push({ id: uid(), type: "expense", date, accountId: fromId, categoryId: ensureTransferCategory("expense", fromBucket), amount, description, bucket: fromBucket, transferId });
+  db.transactions.push({ id: uid(), type: "income", date, accountId: toId, categoryId: ensureTransferCategory("income", toBucket), amount, description, bucket: toBucket, transferId });
+  saveData();
+  document.getElementById("crossAmount").value = "";
+  document.getElementById("crossDescription").value = "";
+  renderAccountsView(); renderAll();
+  toast(`Transferred ${fmtMoney(amount)} from ${from.name} (${fromBucket}) to ${to.name} (${toBucket})`);
+});
+
 /* Accounts have no edit form (only add/delete, and delete is blocked once transactions exist), so an
    existing holding account could otherwise never be flagged. Toggles straight from the card (3.13). */
 function toggleAccountExclude(accountId) {
@@ -1293,6 +1360,18 @@ function renderAccountsView() {
   if (!document.getElementById("accOpeningDate").value) document.getElementById("accOpeningDate").value = todayISO();
   document.getElementById("accountsTotalBalance").textContent = fmtMoney(totalNetWorth("personal"));
   renderOutstandingLoans();
+  /* Repopulating wipes the selection, so preserve it; default To to the opposite ledger's first account. */
+  const cFrom = document.getElementById("crossFrom"), cTo = document.getElementById("crossTo");
+  const prevFrom = cFrom.value, prevTo = cTo.value;
+  populateCrossAccountSelect(cFrom); populateCrossAccountSelect(cTo);
+  if (prevFrom) cFrom.value = prevFrom;
+  if (prevTo) cTo.value = prevTo;
+  else {
+    const fromAcc = getAccount(cFrom.value);
+    const opposite = db.accounts.find((a) => (a.bucket || "personal") !== ((fromAcc && fromAcc.bucket) || "personal"));
+    if (opposite) cTo.value = opposite.id;
+  }
+  if (!document.getElementById("crossDate").value) document.getElementById("crossDate").value = todayISO();
   const listWrap = document.getElementById("accountListWrap");
   if (db.accounts.length === 0) {
     listWrap.innerHTML = `<div class="empty-state">No accounts yet. Add your bank, cash, or savings account above.</div>`;
@@ -1730,7 +1809,8 @@ document.getElementById("markTransferTxBtn").addEventListener("click", () => {
   if (a.type === b.type) { alert(`A transfer needs one income and one expense — money leaving one account and arriving in another. Both of these are ${a.type}s.`); return; }
   if (round2(a.amount) !== round2(b.amount)) { alert(`The two amounts must match. You selected ${fmtMoney(a.amount)} and ${fmtMoney(b.amount)}.`); return; }
   if (a.accountId === b.accountId) { alert("Both transactions are on the same account, so no money actually moved between accounts."); return; }
-  if ((a.bucket || "personal") !== (b.bucket || "personal")) { alert("Both halves must be in the same ledger (Personal or Business)."); return; }
+  /* Cross-ledger pairs are allowed here (Section 3.14) so a business<->personal movement entered by
+     hand can be corrected retroactively, exactly like a same-ledger one. */
   const dateNote = a.date === b.date ? "" : `\n\nNote: these are dated ${a.date} and ${b.date}. They'll be left on their own dates — nothing is changed for you — but making them match keeps your balance correct on any given day.`;
   if (!confirm(`Mark these two as one transfer of ${fmtMoney(a.amount)}?\n\nThey'll stop counting as income and expense in your Dashboard, budgets, spending chart and Yearly Report. Both account balances stay exactly as they are.${dateNote}`)) return;
   const transferId = uid();
