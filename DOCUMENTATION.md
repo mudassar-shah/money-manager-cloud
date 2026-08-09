@@ -438,7 +438,13 @@ Rates are **entered manually**, with an optional "get latest" button. Deliberate
 
 **Cross-currency transfers (3.10, 3.14).** When the two accounts share a currency the form is unchanged — one amount. When they differ, a **second amount box** appears: what left, and what actually arrived. The user types the received figure from their bank, because a bank's real rate and fees never match a published rate; the saved rate only pre-fills it as a suggestion. The two halves therefore hold **different amounts**, which is why `Mark as Transfer` no longer requires equal amounts when the accounts' currencies differ. No fee transaction is derived — whether the spread is a "loss" depends on which rate you consider true, so that judgement is left to the user.
 
-**Conversion display.** An "also worth" line in the user's chosen currencies appears beneath:
+**Conversion display — a table, not a hint line.** The first attempt put the conversions in the existing 11px grey `stat-sub` beneath each figure. With four currencies it wrapped into an unreadable smear and the user rejected it outright: *"too much small, I'm not able to actually [see] what the actual value is, and not presentable."* A feature whose entire purpose is reading a number must render that number legibly.
+
+Replaced with a dedicated card — **"This Month in Other Currencies"** — holding a real table: one row per currency, columns Income / Expenses / Net, at **15px** with income green and expenses red, matching every other figure in the app. The card hides itself entirely when no display currencies are chosen, so users who never leave one currency see nothing. `renderCurrencyTable(cardId, bodyId, income, expense, net)` serves all three tabs, so they cannot drift apart.
+
+Total Balance conversions get the same treatment at smaller scale: one line per currency at 15px rather than several crammed onto one.
+
+Converted figures appear on:
 - **Total Balance** (Accounts) and **Total Business Balance** (Business)
 - The **Dashboard's monthly** Income, Expenses and Net This Month
 - The **Business tab's monthly** Income, Expenses and Net Profit

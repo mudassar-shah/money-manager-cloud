@@ -127,6 +127,10 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
 .tx-filters input, .tx-filters select { padding: 8px 10px; }
 .cat-search { font-weight: 400; }
 .cat-hint { font-size: 11px; font-weight: 400; color: var(--text-muted); }
+/* Conversion table: readable at a glance, not squeezed into a hint line. */
+.currency-table td, .currency-table th { font-size: 15px; padding: 10px 12px; }
+.currency-table td:first-child { font-weight: 700; }
+.currency-table td.amount { font-weight: 600; font-variant-numeric: tabular-nums; }
 #filterSearch { flex: 1; min-width: 180px; }
 .table-wrap { overflow-x: auto; }
 .checkbox-col { width: 34px; }
@@ -258,22 +262,34 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
         <div class="card stat income">
           <div class="stat-label">Income</div>
           <div class="stat-value" id="statIncome">-</div>
-          <div class="stat-sub" id="statIncomeConv">This month</div>
+          <div class="stat-sub">This month</div>
         </div>
         <div class="card stat expense">
           <div class="stat-label">Expenses</div>
           <div class="stat-value" id="statExpense">-</div>
-          <div class="stat-sub" id="statExpenseConv">This month</div>
+          <div class="stat-sub">This month</div>
         </div>
         <div class="card stat">
           <div class="stat-label">Net This Month</div>
           <div class="stat-value" id="statNet">-</div>
-          <div class="stat-sub" id="statNetConv">This month</div>
+          <div class="stat-sub">This month</div>
         </div>
         <div class="card stat">
           <div class="stat-label">Savings Rate</div>
           <div class="stat-value" id="statSavingsRate">-</div>
           <div class="stat-sub">This month</div>
+        </div>
+      </div>
+
+      <div class="card" id="dashCurrencyCard" style="display:none;">
+        <h2>This Month in Other Currencies</h2>
+        <div class="table-wrap">
+          <table class="tx-table currency-table">
+            <thead>
+              <tr><th>Currency</th><th class="right">Income</th><th class="right">Expenses</th><th class="right">Net</th></tr>
+            </thead>
+            <tbody id="dashCurrencyBody"></tbody>
+          </table>
         </div>
       </div>
 
@@ -608,22 +624,34 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
         <div class="card stat income">
           <div class="stat-label">Total Income</div>
           <div class="stat-value" id="fyIncome">-</div>
-          <div class="stat-sub" id="fyIncomeConv">Full fiscal year</div>
+          <div class="stat-sub">Full fiscal year</div>
         </div>
         <div class="card stat expense">
           <div class="stat-label">Total Expenses</div>
           <div class="stat-value" id="fyExpense">-</div>
-          <div class="stat-sub" id="fyExpenseConv">Full fiscal year</div>
+          <div class="stat-sub">Full fiscal year</div>
         </div>
         <div class="card stat">
           <div class="stat-label" id="fyNetLabel">Net Savings</div>
           <div class="stat-value" id="fyNet">-</div>
-          <div class="stat-sub" id="fyNetConv">Income minus expenses</div>
+          <div class="stat-sub">Income minus expenses</div>
         </div>
         <div class="card stat">
           <div class="stat-label" id="fyRateLabel">Savings Rate</div>
           <div class="stat-value" id="fySavingsRate">-</div>
           <div class="stat-sub">Full fiscal year</div>
+        </div>
+      </div>
+
+      <div class="card" id="fyCurrencyCard" style="display:none;">
+        <h2>This Fiscal Year in Other Currencies</h2>
+        <div class="table-wrap">
+          <table class="tx-table currency-table">
+            <thead>
+              <tr><th>Currency</th><th class="right">Income</th><th class="right">Expenses</th><th class="right">Net</th></tr>
+            </thead>
+            <tbody id="fyCurrencyBody"></tbody>
+          </table>
         </div>
       </div>
 
@@ -687,22 +715,34 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
         <div class="card stat income">
           <div class="stat-label">Income</div>
           <div class="stat-value" id="bizIncome">-</div>
-          <div class="stat-sub" id="bizIncomeConv">This month</div>
+          <div class="stat-sub">This month</div>
         </div>
         <div class="card stat expense">
           <div class="stat-label">Expenses</div>
           <div class="stat-value" id="bizExpense">-</div>
-          <div class="stat-sub" id="bizExpenseConv">This month</div>
+          <div class="stat-sub">This month</div>
         </div>
         <div class="card stat">
           <div class="stat-label">Net Profit</div>
           <div class="stat-value" id="bizNet">-</div>
-          <div class="stat-sub" id="bizNetConv">This month</div>
+          <div class="stat-sub">This month</div>
         </div>
         <div class="card stat">
           <div class="stat-label">Total Business Balance</div>
           <div class="stat-value" id="bizBalance">-</div>
           <div class="stat-sub" id="bizBalanceConverted">All time</div>
+        </div>
+      </div>
+
+      <div class="card" id="bizCurrencyCard" style="display:none;">
+        <h2>This Month in Other Currencies</h2>
+        <div class="table-wrap">
+          <table class="tx-table currency-table">
+            <thead>
+              <tr><th>Currency</th><th class="right">Income</th><th class="right">Expenses</th><th class="right">Net Profit</th></tr>
+            </thead>
+            <tbody id="bizCurrencyBody"></tbody>
+          </table>
         </div>
       </div>
 
@@ -1083,14 +1123,24 @@ function fmtMoney(n, code) {
   const sign = n < 0 ? "-" : ""; const abs = Math.abs(n);
   return `${sign}${symbol} ${abs.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
-/* Writes "This month · ≈ …" under a stat card, or leaves the plain label when no display
-   currencies are chosen or no rate is available. */
-function setConvertedSub(elId, amountInMain, baseLabel) {
-  const el = document.getElementById(elId);
-  if (!el) return;
-  const base = baseLabel || "This month";
-  const conv = conversionLine(amountInMain);
-  el.textContent = conv ? `${base} · ${conv}` : base;
+/* A proper table, one row per currency, at full readable size. Replaced an inline hint line that
+   squeezed four currencies into 11px grey text — unreadable, which is the whole point of the
+   feature. Hidden entirely when no display currencies are chosen. */
+function renderCurrencyTable(cardId, bodyId, income, expense, net) {
+  const card = document.getElementById(cardId), body = document.getElementById(bodyId);
+  if (!card || !body) return;
+  const main = mainCurrency();
+  const codes = ((db.settings && db.settings.displayCurrencies) || []).filter((c) => c !== main);
+  const rows = codes.map((code) => {
+    const i = convertAmount(income, main, code);
+    if (i === null) return "";
+    const e = convertAmount(expense, main, code), n = convertAmount(net, main, code);
+    return `<tr><td>${code}</td><td class="amount income">${fmtMoney(i, code)}</td>` +
+      `<td class="amount expense">${fmtMoney(e, code)}</td>` +
+      `<td class="amount ${n < 0 ? "expense" : "income"}">${fmtMoney(n, code)}</td></tr>`;
+  }).filter(Boolean).join("");
+  card.style.display = rows ? "" : "none";
+  body.innerHTML = rows;
 }
 /* "Also worth" line: the same total expressed in the user's chosen currencies. */
 function conversionLine(amountInMain) {
@@ -1232,9 +1282,7 @@ function renderDashboard() {
   /* This month's figures in the user's chosen currencies — for judging what a month actually costs
      abroad (Section 3.15). Deliberately the MONTH figures only: net worth stays off the Dashboard
      as decided for privacy in Section 3.3a. */
-  setConvertedSub("statIncomeConv", monthIncome);
-  setConvertedSub("statExpenseConv", monthExpense);
-  setConvertedSub("statNetConv", monthIncome - monthExpense);
+  renderCurrencyTable("dashCurrencyCard", "dashCurrencyBody", monthIncome, monthExpense, monthIncome - monthExpense);
   document.getElementById("statSavingsRate").textContent = `${savingsRate.toFixed(1)}%`;
   renderDonutChart(monthTx, "donutChartWrap");
   renderBarChart(dashMonth, "barChartWrap", "personal");
@@ -1362,13 +1410,15 @@ function renderBusinessView() {
   document.getElementById("bizIncome").textContent = fmtMoney(income);
   document.getElementById("bizExpense").textContent = fmtMoney(expense);
   document.getElementById("bizNet").textContent = fmtMoney(income - expense);
-  setConvertedSub("bizIncomeConv", income);
-  setConvertedSub("bizExpenseConv", expense);
-  setConvertedSub("bizNetConv", income - expense);
+  renderCurrencyTable("bizCurrencyCard", "bizCurrencyBody", income, expense, income - expense);
   const bizTotal = totalNetWorth("business");
   document.getElementById("bizBalance").textContent = fmtMoney(bizTotal);
-  const bizConv = conversionLine(bizTotal);
-  document.getElementById("bizBalanceConverted").textContent = bizConv ? "All time · " + bizConv : "All time";
+  const bizMain = mainCurrency();
+  const bizLines = ((db.settings.displayCurrencies) || []).filter((c) => c !== bizMain).map((code) => {
+    const v = convertAmount(bizTotal, bizMain, code);
+    return v === null ? "" : `<div style="font-size:15px;font-weight:600;color:var(--text);margin-top:2px;">${fmtMoney(v, code)}</div>`;
+  }).filter(Boolean).join("");
+  document.getElementById("bizBalanceConverted").innerHTML = `<div>All time</div>${bizLines}`;
   renderDonutChart(monthTx, "bizDonutWrap");
   renderBarChart(bizMonth, "bizBarWrap", "business");
   renderAccountsOverview("bizAccountsWrap", "business");
@@ -1588,8 +1638,15 @@ function renderAccountsView() {
   missingRateCodes = new Set();
   const personalTotal = totalNetWorth("personal");
   document.getElementById("accountsTotalBalance").textContent = fmtMoney(personalTotal);
-  const conv = conversionLine(personalTotal);
-  document.getElementById("accountsTotalConverted").textContent = conv ? "All time · " + conv : "All time";
+  /* Same readability problem as the Dashboard: several currencies crammed into one hint line is
+     unreadable. Each gets its own line at normal text size instead. */
+  const main = mainCurrency();
+  const codes = ((db.settings.displayCurrencies) || []).filter((c) => c !== main);
+  const lines = codes.map((code) => {
+    const v = convertAmount(personalTotal, main, code);
+    return v === null ? "" : `<div style="font-size:15px;font-weight:600;color:var(--text);margin-top:2px;">${fmtMoney(v, code)}</div>`;
+  }).filter(Boolean).join("");
+  document.getElementById("accountsTotalConverted").innerHTML = `<div>All time</div>${lines}`;
   renderCurrencySettings();
   renderMissingRateWarning();
   renderOutstandingLoans();
@@ -2333,9 +2390,7 @@ function renderYearlyView() {
   document.getElementById("fyExpense").textContent = fmtMoney(expense);
   document.getElementById("fyNet").textContent = fmtMoney(net);
   document.getElementById("fySavingsRate").textContent = `${rate.toFixed(1)}%`;
-  setConvertedSub("fyIncomeConv", income, "Full fiscal year");
-  setConvertedSub("fyExpenseConv", expense, "Full fiscal year");
-  setConvertedSub("fyNetConv", net, "Income minus expenses");
+  renderCurrencyTable("fyCurrencyCard", "fyCurrencyBody", income, expense, net);
   /* Same arithmetic, business-appropriate labels — matching the Business tab's naming (3.8). */
   document.getElementById("fyNetLabel").textContent = isBusiness ? "Net Profit" : "Net Savings";
   document.getElementById("fyRateLabel").textContent = isBusiness ? "Profit Margin" : "Savings Rate";
