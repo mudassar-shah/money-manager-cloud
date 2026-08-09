@@ -231,7 +231,16 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
     <button type="button" id="lockUnlockBtn" class="primary-btn">Unlock</button>
     <div id="lockMsg" class="lock-msg"></div>
     <button type="button" id="lockForgotBtn" class="ghost-btn small" style="width:100%;margin-top:10px;background:transparent;color:var(--text-muted);border-color:var(--border);">Forgot your PIN?</button>
-    <div class="lock-help">Recovery: delete the <code>pinHash</code> row from the Settings tab of your Google Sheet first, then press the button above.</div>
+
+    <div id="lockRecoveryPanel" style="display:none;margin-top:14px;padding-top:14px;border-top:1px solid var(--border);">
+      <p class="lock-sub" style="margin-bottom:10px;">Enter the recovery code you saved when you set the PIN. This removes the lock so you can set a new one.</p>
+      <input type="text" id="lockRecoveryInput" maxlength="20" placeholder="XXXX-XXXX-XXXX" autocomplete="off" style="letter-spacing:.12em;font-size:16px;">
+      <button type="button" id="lockRecoveryBtn" class="primary-btn">Remove Lock</button>
+      <div id="lockRecoveryMsg" class="lock-msg"></div>
+      <button type="button" id="lockWipeBtn" class="ghost-btn small danger" style="width:100%;margin-top:10px;">I don't have the code — reset this device instead</button>
+    </div>
+
+    <div class="lock-help">No recovery code? On the Cloud version you can also delete the <code>pinHash</code> row from the Settings tab of your Google Sheet, then use the reset button above.</div>
   </div>
 </div>
 
@@ -905,6 +914,9 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
       <div class="card">
         <h2>App Lock</h2>
         <p class="hint">Ask for a PIN before the app opens. This stops someone casually picking up your phone and reading your finances — it is <strong>not</strong> full security, because anyone technical could get past it, and your data also lives in your Google Sheet. Your real protection is your Google sign-in and your device's own lock.</p>
+        <div id="defaultPinNote" class="hint" style="display:none;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:12px;">
+          This device is using the <strong>built-in code</strong> that guards the public link. Set your own PIN below to replace it — once you do, the built-in code stops working here and only your PIN opens the app on this device.
+        </div>
         <div id="lockOffBlock">
           <div class="form-row">
             <label>New PIN (4–8 digits)
@@ -926,7 +938,12 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
               <input type="password" id="pinChange" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="new-password" placeholder="••••">
             </label>
             <button type="button" id="pinChangeBtn" class="primary-btn">Change PIN</button>
+            <button type="button" id="pinNewCodeBtn" class="ghost-btn small">New Recovery Code</button>
             <button type="button" id="pinRemoveBtn" class="ghost-btn danger small">Remove Lock</button>
+          </div>
+          <div id="recoveryCodeBox" style="display:none;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;margin-top:4px;">
+            <div class="cat-hint">Your recovery code — write it down, it won't be shown again:</div>
+            <div id="recoveryCodeValue" style="font-size:20px;font-weight:700;letter-spacing:.12em;margin-top:4px;">—</div>
           </div>
         </div>
         <div id="pinStatus" class="cat-hint" style="margin-top:6px;"></div>
@@ -1185,7 +1202,46 @@ async function hashPin(pin, salt) {
   }
   return weakHash(data);
 }
-function lockIsSet() { return !!(db.settings && db.settings.pinHash && db.settings.pinSalt); }
+/* ---- Built-in demo PIN for the public link (Section 3.16a) ----------------------------------
+   The Cloud copy is a public URL; without this, anyone with the link lands in a working empty app
+   and starts using it. Set to "" to reopen the site to everyone. A PERSONAL PIN ALWAYS OVERRIDES
+   THIS — once one is set, the code below stops working on that device.
+   This is a gate against casual visitors, NOT protection for the software: the page is public, so
+   this value is readable in the source and the whole app can be saved and run offline. */
+const DEFAULT_PIN = "8833";
+
+function personalPinSet() { return !!(db.settings && db.settings.pinHash && db.settings.pinSalt); }
+function usingDefaultPin() { return !personalPinSet() && !!DEFAULT_PIN; }
+function lockIsSet() { return personalPinSet() || usingDefaultPin(); }
+
+/* Recovery code: the route that works everywhere, including on a phone away from home and on the
+   PC/iPhone copies which have no Google Sheet. Alphabet excludes 0/O/1/I/L so it can be written
+   down and read back without ambiguity (Section 3.16). */
+const RECOVERY_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
+function makeRecoveryCode() {
+  const n = 12, a = new Uint8Array(n);
+  if (window.crypto && crypto.getRandomValues) crypto.getRandomValues(a);
+  else for (let i = 0; i < n; i++) a[i] = Math.floor(Math.random() * 256);
+  const chars = Array.from(a).map((b) => RECOVERY_ALPHABET[b % RECOVERY_ALPHABET.length]);
+  return chars.slice(0, 4).join("") + "-" + chars.slice(4, 8).join("") + "-" + chars.slice(8, 12).join("");
+}
+const normaliseCode = (s) => (s || "").toUpperCase().replace(/[^0-9A-Z]/g, "");
+/* Generates a code, stores only its hash, and returns the plaintext for one-time display. */
+async function issueRecoveryCode() {
+  const code = makeRecoveryCode();
+  db.settings.recoverySalt = randomSaltHex();
+  db.settings.recoveryHash = await hashPin(normaliseCode(code), db.settings.recoverySalt);
+  return code;
+}
+async function recoveryCodeMatches(entered) {
+  if (!db.settings || !db.settings.recoveryHash || !db.settings.recoverySalt) return false;
+  return (await hashPin(normaliseCode(entered), db.settings.recoverySalt)) === db.settings.recoveryHash;
+}
+function clearLock() {
+  delete db.settings.pinHash; delete db.settings.pinSalt;
+  delete db.settings.recoveryHash; delete db.settings.recoverySalt;
+  saveData();
+}
 
 let lockedNow = false, lastHiddenAt = null, wrongAttempts = 0;
 const LOCK_AFTER_MS = 10 * 60 * 1000;   /* 10 minutes, chosen by the user over 5 */
@@ -1195,6 +1251,11 @@ function showLockScreen() {
   document.getElementById("lockScreen").style.display = "flex";
   document.getElementById("lockPin").value = "";
   document.getElementById("lockMsg").textContent = "";
+  /* Nothing to recover when the built-in code is in use — it lives in the page (3.16a). */
+  const onDefault = usingDefaultPin();
+  document.getElementById("lockForgotBtn").style.display = onDefault ? "none" : "";
+  document.getElementById("lockRecoveryPanel").style.display = "none";
+  document.querySelector("#lockScreen .lock-help").style.display = onDefault ? "none" : "";
   setTimeout(() => { try { document.getElementById("lockPin").focus(); } catch (e) {} }, 50);
 }
 function hideLockScreen() {
@@ -1208,9 +1269,12 @@ async function tryUnlock() {
   const pin = document.getElementById("lockPin").value.trim();
   const msg = document.getElementById("lockMsg");
   if (!pin) { msg.textContent = "Enter your PIN."; return; }
-  if (await hashPin(pin, db.settings.pinSalt) === db.settings.pinHash) {
-    wrongAttempts = 0; hideLockScreen(); renderAll(); return;
-  }
+  /* A personal PIN takes precedence; the built-in code only applies when none is set, so a private
+     PIN is never weakened by a publicly-known one (Section 3.16a). */
+  const ok = personalPinSet()
+    ? (await hashPin(pin, db.settings.pinSalt)) === db.settings.pinHash
+    : pin === DEFAULT_PIN;
+  if (ok) { wrongAttempts = 0; hideLockScreen(); renderAll(); return; }
   wrongAttempts++;
   /* No lockout by design — locking the owner out of their own money data would be worse than the
      casual snooping this deters. */
@@ -1226,7 +1290,27 @@ document.getElementById("lockPin").addEventListener("keydown", (e) => { if (e.ke
    reach the sync button. So this clears the local copy and reloads, after which the app signs in
    and pulls a fresh copy from the Sheet (where pinHash is now gone). Safe because the Sheet holds
    the data — but genuinely destructive to anything not yet synced, so it says so. */
+/* Reveals the recovery panel. The code route is offered first because it is non-destructive; the
+   device wipe is deliberately the second, clearly-labelled option. */
 document.getElementById("lockForgotBtn").addEventListener("click", () => {
+  const p = document.getElementById("lockRecoveryPanel");
+  p.style.display = p.style.display === "none" ? "" : "none";
+  if (p.style.display !== "none") document.getElementById("lockRecoveryInput").focus();
+});
+
+document.getElementById("lockRecoveryBtn").addEventListener("click", async () => {
+  const msg = document.getElementById("lockRecoveryMsg");
+  const entered = document.getElementById("lockRecoveryInput").value.trim();
+  if (!entered) { msg.textContent = "Enter your recovery code."; return; }
+  if (!(await recoveryCodeMatches(entered))) { msg.textContent = "That recovery code doesn't match."; return; }
+  clearLock();
+  hideLockScreen();
+  renderLockSettings(); renderAll();
+  alert("Lock removed.\n\nYour data is untouched. Set a new PIN from the Cloud Sync tab when you're ready — you'll get a new recovery code then.");
+});
+document.getElementById("lockRecoveryInput").addEventListener("keydown", (e) => { if (e.key === "Enter") document.getElementById("lockRecoveryBtn").click(); });
+
+document.getElementById("lockWipeBtn").addEventListener("click", () => {
   const ok = confirm(
     "Forgot your PIN?\n\n" +
     "STEP 1 — In your Google Sheet, open the Settings tab and delete the row whose first cell says pinHash. Do that BEFORE continuing.\n\n" +
@@ -1249,9 +1333,20 @@ document.addEventListener("visibilitychange", () => {
 });
 
 function renderLockSettings() {
-  const on = lockIsSet();
+  /* Keyed on the PERSONAL pin, not lockIsSet(): with only the built-in code active there is no
+     personal PIN to change or remove, so the "set one" block must still be offered (3.16a). */
+  const on = personalPinSet();
   document.getElementById("lockOffBlock").style.display = on ? "none" : "";
   document.getElementById("lockOnBlock").style.display = on ? "" : "none";
+  const note = document.getElementById("defaultPinNote");
+  if (note) note.style.display = usingDefaultPin() ? "" : "none";
+}
+/* Shown once and never retrievable — only the hash is kept. An alert is used deliberately: it
+   blocks until acknowledged, so the code cannot scroll past unnoticed. */
+function showRecoveryCode(code, lead) {
+  const box = document.getElementById("recoveryCodeBox");
+  if (box) { box.style.display = ""; box.querySelector("#recoveryCodeValue").textContent = code; }
+  alert(`${lead}\n\nYOUR RECOVERY CODE:\n\n        ${code}\n\nWrite this down now and keep it somewhere safe — a wallet, or your password manager.\n\nIf you ever forget your PIN, this code removes the lock. It will NOT be shown again; only a scrambled copy is stored. You can generate a new one any time from the App Lock card.`);
 }
 const validPin = (p) => /^[0-9]{4,8}$/.test(p);
 
@@ -1262,9 +1357,11 @@ document.getElementById("pinSetBtn").addEventListener("click", async () => {
   if (a !== b) { st.textContent = "The two PINs don't match."; return; }
   db.settings.pinSalt = randomSaltHex();
   db.settings.pinHash = await hashPin(a, db.settings.pinSalt);
+  const code = await issueRecoveryCode();
   saveData();
   document.getElementById("pinNew").value = ""; document.getElementById("pinNew2").value = "";
   renderLockSettings();
+  showRecoveryCode(code, "App Lock is on.");
   st.textContent = "App Lock is on. It will ask for this PIN next time the app opens.";
   toast("App Lock turned on");
 });
@@ -1282,13 +1379,24 @@ document.getElementById("pinChangeBtn").addEventListener("click", async () => {
   toast("PIN changed");
 });
 
+/* Issuing a fresh code invalidates the old one, so it requires the current PIN. */
+document.getElementById("pinNewCodeBtn").addEventListener("click", async () => {
+  const cur = document.getElementById("pinCurrent").value.trim();
+  const st = document.getElementById("pinStatus");
+  if (await hashPin(cur, db.settings.pinSalt) !== db.settings.pinHash) { st.textContent = "Enter your current PIN to generate a new recovery code."; return; }
+  const code = await issueRecoveryCode();
+  saveData();
+  document.getElementById("pinCurrent").value = "";
+  showRecoveryCode(code, "New recovery code generated. The old one no longer works.");
+  st.textContent = "New recovery code generated — the previous one is now invalid.";
+});
+
 document.getElementById("pinRemoveBtn").addEventListener("click", async () => {
   const cur = document.getElementById("pinCurrent").value.trim();
   const st = document.getElementById("pinStatus");
   if (await hashPin(cur, db.settings.pinSalt) !== db.settings.pinHash) { st.textContent = "Enter your current PIN to remove the lock."; return; }
   if (!confirm("Turn off App Lock? Anyone who opens the app will see your finances straight away.")) return;
-  delete db.settings.pinHash; delete db.settings.pinSalt;
-  saveData();
+  clearLock();
   document.getElementById("pinCurrent").value = ""; document.getElementById("pinChange").value = "";
   renderLockSettings();
   st.textContent = "App Lock removed.";
@@ -3048,7 +3156,11 @@ function coerceTypesFromSheet(raw) {
   const settings = { currency: settingsCurrency, rates: settingsRates, displayCurrencies: settingsDisplay };
   /* Absent rows mean no lock — a Settings tab written before this feature simply loads unlocked. */
   const ph = settingRow("pinHash"), ps = settingRow("pinSalt");
-  if (ph && ps) { settings.pinHash = String(ph); settings.pinSalt = String(ps); }
+  if (ph && ps) {
+    settings.pinHash = String(ph); settings.pinSalt = String(ps);
+    const rh = settingRow("recoveryHash"), rs = settingRow("recoverySalt");
+    if (rh && rs) { settings.recoveryHash = String(rh); settings.recoverySalt = String(rs); }
+  }
   return { categories, accounts, transactions, budgets, reconciliations, settings };
 }
 
@@ -3066,6 +3178,9 @@ function buildRowsForTab(tab) {
        what makes the recovery instruction (delete the row) work (Section 3.16). */
     if (db.settings.pinHash && db.settings.pinSalt) {
       rows.push(["pinHash", db.settings.pinHash], ["pinSalt", db.settings.pinSalt]);
+      if (db.settings.recoveryHash && db.settings.recoverySalt) {
+        rows.push(["recoveryHash", db.settings.recoveryHash], ["recoverySalt", db.settings.recoverySalt]);
+      }
     }
     return rows;
   }

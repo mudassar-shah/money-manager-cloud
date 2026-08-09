@@ -106,6 +106,7 @@ Two things about the move that were verified rather than assumed:
 
 Supported codes: `PKR, USD, AED, SAR, QAR, GBP, EUR, INR`.
 - `pinHash`, `pinSalt` — the app lock (Section 3.16). Absent means no lock. The PIN itself is **never stored**.
+- `recoveryHash`, `recoverySalt` — the one-time recovery code that clears the lock (Section 3.16). Stored hashed, exactly like the PIN; the code itself is shown once at setup and never again.
 
 ---
 
@@ -489,9 +490,37 @@ pinHash  = SHA-256(pinSalt + ":" + pin), hex        via crypto.subtle where avai
 
 **But "delete the row and reload" alone does not work**, and that was nearly shipped. A reload reads `localStorage`, not the Sheet, so the device would still be locked — and the user could not reach the Sync button to pull the corrected copy, because the lock screen is in the way. The lock screen therefore carries a **"Forgot your PIN?"** button that clears this device's local copy and reloads, after which the app signs in and pulls a fresh copy from the Sheet with no PIN in it.
 
-It asks twice and states plainly that anything never synced to the Sheet will be lost, because it genuinely will be. On the non-syncing PC/iPhone copies the equivalent is Reset All Data or clearing site data.
+It asks twice and states plainly that anything never synced to the Sheet will be lost, because it genuinely will be.
+
+**Recovery code — the route that works everywhere.** The Sheet route needs the user at a computer with their Google account; useless if they are locked out on a phone away from home. And the PC/iPhone copies have no Sheet at all. So setting a PIN also generates a **one-time recovery code** (format `XXXX-XXXX-XXXX`, from an alphabet excluding `0/O/1/I/L` so it can be written down and read back without ambiguity).
+
+```
+recoverySalt = 16 random bytes
+recoveryHash = hash(recoverySalt + ":" + code)      same scheme as the PIN
+```
+Shown **once**, at setup, and never retrievable — only its hash is kept. Entering it on the lock screen **removes the lock entirely** and lets the user set a new PIN. A fresh code can be generated at any time from the App Lock card, which requires the current PIN.
+
+**SMS recovery was requested and rejected**, with reasons given to the user: a browser cannot send SMS without a server and a paid gateway; calling such a service directly would put the API key in the page source for anyone to use at the owner's expense; and the returned code would be verified in the browser anyway, so it would add cost and expose a phone number without adding any real protection.
+
+**Last resort on a local copy**: if both PIN and recovery code are lost, Reset All Data followed by Import Backup — the same answer as any lost password on an offline file, and the reason Export Backup matters.
 
 **Synced, so one PIN covers every device** — set on the PC, applies on the phone. It rides on the Settings key/value rows added in Section 3.15; no new sheet columns.
+
+#### 3.16a Built-in demo PIN on the public link
+
+**Why.** The Cloud copy is a public URL. Anyone given the link previously landed in a fully working, empty app and simply started using it — which undermined the user's attempt to *sell* the software, because it never felt like a product. `DEFAULT_PIN = "8833"` puts a gate on the front door: no code, no app.
+
+```
+usingDefaultPin() = DEFAULT_PIN is non-empty AND no personal PIN is set
+lockIsSet()       = personal PIN set  OR  usingDefaultPin()
+```
+**A personal PIN always wins.** The moment the user sets their own, `8833` stops working on that device — otherwise their private PIN would be weakened by one that is publicly known. Blanking `DEFAULT_PIN` reopens the site; it is a single clearly-marked constant so this stays a one-line change.
+
+**Stated plainly to the user, who accepted it: this does not protect the software.** The page is public, so the code is in the source (Ctrl+U), the whole app can be saved with Ctrl+S and run offline forever, and a browser-side check can be disabled in developer tools. It stops casual visitors wandering in; it cannot stop anyone who actually wants to take a copy. The advice given was to demo it personally rather than hand out the link, and to sell the setup and support — the Google Cloud project, the OAuth Client ID, the private Sheet, the configuration — since that is the part a buyer cannot copy.
+
+**No recovery applies to the default PIN**, and the recovery panel is hidden while it is in use: there is nothing to recover, since the code is in the page. Recovery exists only for personal PINs.
+
+**Deliberate differences in the PC and iPhone copies.** They have no Cloud Sync tab, so the App Lock card sits on the **Accounts** tab instead. They also have no Google Sheet, so all Sheet-specific wording is replaced: the intro says the data lives in this browser and that the device's own lock is the real protection, the overlay's help line points to Reset All Data, and the device-wipe confirmation explains that **Import Backup** is the only way back. The recovery code is therefore the *only* non-destructive route on those copies, which is why it exists.
 
 ---
 
