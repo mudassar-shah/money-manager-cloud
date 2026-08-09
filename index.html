@@ -852,6 +852,16 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
       </div>
 
       <div class="card">
+        <div class="form-row" style="margin-bottom:0;">
+          <label class="grow">Find a category
+            <input type="text" id="catSearch" class="cat-search" placeholder="Type to filter, e.g. grocery" autocomplete="off">
+          </label>
+          <button type="button" id="catSearchClear" class="ghost-btn small">Clear</button>
+        </div>
+        <div id="catSearchHint" class="cat-hint" style="margin-top:6px;"></div>
+      </div>
+
+      <div class="card">
         <h2>Expense Categories</h2>
         <div id="expenseCatList" class="cat-list"></div>
       </div>
@@ -2648,37 +2658,67 @@ document.getElementById("deleteSelectedCatBtn").addEventListener("click", () => 
   toast(`Deleted ${deletable.length} categor${deletable.length > 1 ? "ies" : "y"}${blocked.length ? `, skipped ${blocked.length}` : ""}`);
 });
 
+document.getElementById("catSearch").addEventListener("input", () => renderCategoriesView());
+document.getElementById("catSearchClear").addEventListener("click", () => {
+  document.getElementById("catSearch").value = "";
+  renderCategoriesView();
+});
+
 function renderCategoriesView() {
   const visibleIds = new Set(db.categories.map((c) => c.id));
   selectedCatIds.forEach((id) => { if (!visibleIds.has(id)) selectedCatIds.delete(id); });
 
-  const catRow = (c, indent, siblings) => {
+  /* Reordering swaps `order` with the adjacent sibling in the FULL list. While a filter is active
+     some siblings are hidden, so an arrow would appear to do nothing (it swapped with something
+     off-screen). Disabled with an explanatory tooltip rather than left to confuse. */
+  const q = (document.getElementById("catSearch").value || "").trim().toLowerCase();
+  const hit = (name) => (name || "").toLowerCase().includes(q);
+  const filtering = q.length > 0;
+
+  const catRow = (c, indent, siblings, dim) => {
     const idx = siblings.findIndex((s) => s.id === c.id);
     const isFirst = idx === 0;
     const isLast = idx === siblings.length - 1;
-    return `<div class="cat-list-item" style="${indent ? "margin-left:26px;" : ""}">
+    const reorderOff = filtering;
+    const reorderTitle = filtering ? "Clear the search to reorder" : "";
+    return `<div class="cat-list-item" style="${indent ? "margin-left:26px;" : ""}${dim ? "opacity:.55;" : ""}">
     <label class="cat-badge"><input type="checkbox" class="cat-checkbox" ${selectedCatIds.has(c.id) ? "checked" : ""} onchange="toggleCatSelect('${c.id}', this.checked)"><span class="cat-dot" style="background:${c.color}"></span>${c.name}${c.excludeFromTotals ? `<span class="cat-hint" style="margin-left:8px;" title="Transactions here are skipped by Income and Expenses, but still change your account balance.">not counted</span>` : ""}</label>
     <span class="row-actions">
-      <button class="icon-link" ${isFirst ? "disabled" : ""} onclick="moveCategory('${c.id}','up')" title="Move up">↑</button>
-      <button class="icon-link" ${isLast ? "disabled" : ""} onclick="moveCategory('${c.id}','down')" title="Move down">↓</button>
+      <button class="icon-link" ${isFirst || reorderOff ? "disabled" : ""} onclick="moveCategory('${c.id}','up')" title="${reorderTitle || "Move up"}">↑</button>
+      <button class="icon-link" ${isLast || reorderOff ? "disabled" : ""} onclick="moveCategory('${c.id}','down')" title="${reorderTitle || "Move down"}">↓</button>
       <button class="icon-link" onclick="editCategory('${c.id}')">Edit</button>
       <button class="icon-link danger" onclick="deleteCategory('${c.id}')">Delete</button>
     </span>
   </div>`;
   };
 
+  let shown = 0, total = 0;
   const renderList = (type) => {
     const all = db.categories.filter((c) => c.type === type && c.bucket === categoriesLedger);
+    total += all.length;
     const topLevel = sortCats(all.filter((c) => !c.parentId));
     if (topLevel.length === 0) return `<div class="empty-state">No ${categoriesLedger} categories yet.</div>`;
-    return topLevel.map((top) => {
+    const html = topLevel.map((top) => {
       const subs = sortCats(all.filter((c) => c.parentId === top.id));
-      return catRow(top, false, topLevel) + subs.map((s) => catRow(s, true, subs)).join("");
+      if (!filtering) { shown += 1 + subs.length; return catRow(top, false, topLevel) + subs.map((s) => catRow(s, true, subs)).join(""); }
+      const topMatches = hit(top.name);
+      /* A parent match keeps its whole group; otherwise only matching children, with the parent
+         still drawn (dimmed) so a subcategory is never shown without its context. */
+      const shownSubs = topMatches ? subs : subs.filter((s) => hit(s.name));
+      if (!topMatches && shownSubs.length === 0) return "";
+      shown += (topMatches ? 1 : 0) + shownSubs.length;
+      return catRow(top, false, topLevel, !topMatches) + shownSubs.map((s) => catRow(s, true, subs)).join("");
     }).join("");
+    return html || `<div class="empty-state">No ${type} categories match "${q}".</div>`;
   };
 
   document.getElementById("expenseCatList").innerHTML = renderList("expense");
   document.getElementById("incomeCatList").innerHTML = renderList("income");
+  /* "matches", not "showing" — a non-matching parent is still drawn as context, so the row count on
+     screen is legitimately higher than the match count. */
+  document.getElementById("catSearchHint").textContent = filtering
+    ? `${shown} match${shown === 1 ? "" : "es"} in ${total} categories · a greyed-out parent is shown for context · reordering is paused while filtering`
+    : "";
   populateCatParentSelect();
   populateBulkSubParentSelect();
   updateCatBulkBar();
