@@ -330,6 +330,9 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
               <option value="credit_card">Credit Card</option>
             </select>
           </label>
+          <label>Currency
+            <select id="accCurrency"></select>
+          </label>
           <label>Opening Balance
             <input type="number" id="accOpeningBalance" step="0.01" placeholder="0.00" value="0">
           </label>
@@ -348,6 +351,25 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
       </div>
 
       <div class="card">
+        <h2>Currencies &amp; Exchange Rates</h2>
+        <p class="hint">Your money is stored in whatever currency each account uses — nothing is ever converted behind your back. These rates are only used to add different currencies together for totals, and to show the "also worth" lines. Enter how many <strong id="rateBaseLabel">PKR</strong> one unit is worth.</p>
+        <div class="form-row">
+          <label>Main currency (totals shown in)
+            <select id="mainCurrencySelect"></select>
+          </label>
+          <label class="grow">Also show totals in
+            <div id="displayCurrencyChecks" style="display:flex;flex-wrap:wrap;gap:10px;font-weight:400;padding-top:6px;"></div>
+          </label>
+        </div>
+        <div id="rateInputs" class="form-row"></div>
+        <div class="form-row">
+          <button type="button" id="saveRatesBtn" class="primary-btn">Save Rates</button>
+          <button type="button" id="fetchRatesBtn" class="ghost-btn small">Get latest rates</button>
+          <span id="ratesStatus" class="cat-hint"></span>
+        </div>
+      </div>
+
+      <div class="card">
         <h2>Transfer Between Business and Personal</h2>
         <form id="crossForm" class="tx-form">
           <div class="form-row">
@@ -357,8 +379,12 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
             <label>To Account
               <select id="crossTo" required></select>
             </label>
-            <label>Amount
+            <label id="crossAmountLabel">Amount
               <input type="number" id="crossAmount" step="0.01" min="0" required placeholder="0.00">
+            </label>
+            <label id="crossReceivedLabel" style="display:none;">Amount received
+              <input type="number" id="crossReceived" step="0.01" min="0" placeholder="0.00">
+              <span class="cat-hint">What actually arrived, from your bank</span>
             </label>
             <label>Date
               <input type="date" id="crossDate" required>
@@ -379,8 +405,9 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
         <div class="stat" style="margin-bottom:14px;">
           <div class="stat-label">Total Balance (Personal)</div>
           <div class="stat-value" id="accountsTotalBalance">-</div>
-          <div class="stat-sub">All time</div>
+          <div class="stat-sub" id="accountsTotalConverted">All time</div>
         </div>
+        <div id="rateWarning" class="hint" style="display:none;color:var(--expense);margin:0 0 12px;"></div>
         <div class="stat" id="accountsOutstandingBlock" style="margin-bottom:14px;display:none;">
           <div class="stat-label" id="accountsOutstandingLabel">Lent out, not yet returned</div>
           <div class="stat-value" id="accountsOutstanding">-</div>
@@ -482,8 +509,12 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
             <label>To Account
               <select id="trToAccount" required></select>
             </label>
-            <label>Amount
+            <label id="trAmountLabel">Amount
               <input type="number" id="trAmount" step="0.01" min="0" required placeholder="0.00">
+            </label>
+            <label id="trReceivedLabel" style="display:none;">Amount received
+              <input type="number" id="trReceived" step="0.01" min="0" placeholder="0.00">
+              <span class="cat-hint">What actually arrived, from your bank</span>
             </label>
             <label>Date
               <input type="date" id="trDate" required>
@@ -671,7 +702,7 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
         <div class="card stat">
           <div class="stat-label">Total Business Balance</div>
           <div class="stat-value" id="bizBalance">-</div>
-          <div class="stat-sub">All time</div>
+          <div class="stat-sub" id="bizBalanceConverted">All time</div>
         </div>
       </div>
 
@@ -842,8 +873,9 @@ const STORAGE_KEY = "moneyManagerData";
 const CLOUD_CONFIG_KEY = "moneyManagerCloudConfig";
 
 const CURRENCIES = [
-  { code: "PKR", symbol: "Rs" }, { code: "USD", symbol: "$" }, { code: "EUR", symbol: "€" },
-  { code: "GBP", symbol: "£" }, { code: "INR", symbol: "₹" }, { code: "AED", symbol: "AED" },
+  { code: "PKR", symbol: "Rs" }, { code: "USD", symbol: "$" }, { code: "AED", symbol: "AED" },
+  { code: "SAR", symbol: "SAR" }, { code: "QAR", symbol: "QAR" }, { code: "GBP", symbol: "£" },
+  { code: "EUR", symbol: "€" }, { code: "INR", symbol: "₹" },
 ];
 const ACCOUNT_TYPES = [
   { value: "bank", label: "Bank Account" }, { value: "cash", label: "Cash" },
@@ -904,11 +936,24 @@ function loadData() {
     data.transactions.forEach((t) => { if (!t.accountId) t.accountId = defaultAccount.id; });
   }
   ensureBuckets(data);
+  ensureCurrencies(data);
   seedBusinessCategories(data);
   repairOrphanedParents(data);
   repairReconciliationBuckets(data);
   ensureCategoryOrder(data);
   return data;
+}
+
+/* Migration for Section 3.15: every account that predates the currency field was in the main
+   currency, so stamping it there is exactly right and leaves every figure unchanged. Runs on every
+   load (and after each sync pull) as a self-heal, like ensureBuckets. */
+function ensureCurrencies(data) {
+  if (!data.settings) data.settings = { currency: "PKR" };
+  if (!data.settings.currency) data.settings.currency = "PKR";
+  if (!data.settings.rates || typeof data.settings.rates !== "object") data.settings.rates = {};
+  if (!Array.isArray(data.settings.displayCurrencies)) data.settings.displayCurrencies = [];
+  const main = data.settings.currency;
+  data.accounts.forEach((a) => { if (!a.currency) a.currency = main; });
 }
 
 function ensureBuckets(data) {
@@ -1003,8 +1048,60 @@ function saveData() {
 }
 function saveLocalOnly() { localStorage.setItem(STORAGE_KEY, JSON.stringify(db)); }
 
-function currencySymbol() { const c = CURRENCIES.find((c) => c.code === db.settings.currency) || CURRENCIES[0]; return c.symbol; }
-function fmtMoney(n) { const symbol = currencySymbol(); const sign = n < 0 ? "-" : ""; const abs = Math.abs(n); return `${sign}${symbol} ${abs.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`; }
+/* ===== Multi-currency (Section 3.15) =====
+   Currency belongs to the ACCOUNT. Per-account balances are therefore already single-currency and
+   need no conversion; only sums that span accounts do. */
+function mainCurrency() { return (db.settings && db.settings.currency) || "PKR"; }
+function currencySymbolFor(code) { const c = CURRENCIES.find((c) => c.code === code); return c ? c.symbol : (code || ""); }
+function currencySymbol() { return currencySymbolFor(mainCurrency()); }
+function accountCurrency(accountId) { const a = getAccount(accountId); return (a && a.currency) || mainCurrency(); }
+/* Rates are always "how many PKR is 1 unit of this currency", PKR fixed at 1. Anchoring to PKR
+   rather than to the main currency keeps the meaning unambiguous if the main currency changes. */
+function rateToPKR(code) {
+  if (code === "PKR") return 1;
+  const r = db.settings && db.settings.rates ? Number(db.settings.rates[code]) : NaN;
+  return Number.isFinite(r) && r > 0 ? r : null;
+}
+/* Returns null when a rate is missing — deliberately NOT 1:1, which would produce a confident wrong
+   number. Callers must exclude nulls and surface a warning instead. */
+function convertAmount(amount, from, to) {
+  if (!from || !to || from === to) return amount;
+  const rf = rateToPKR(from), rt = rateToPKR(to);
+  if (rf === null || rt === null) return null;
+  return (amount * rf) / rt;
+}
+/* Missing-rate currencies encountered during the last render pass, surfaced as a warning banner. */
+let missingRateCodes = new Set();
+function txAmountInMain(t) {
+  const from = accountCurrency(t.accountId), to = mainCurrency();
+  const v = convertAmount(t.amount, from, to);
+  if (v === null) { missingRateCodes.add(from); return 0; }
+  return v;
+}
+function fmtMoney(n, code) {
+  const symbol = currencySymbolFor(code || mainCurrency());
+  const sign = n < 0 ? "-" : ""; const abs = Math.abs(n);
+  return `${sign}${symbol} ${abs.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+/* "Also worth" line: the same total expressed in the user's chosen currencies. */
+function conversionLine(amountInMain) {
+  const chosen = (db.settings && db.settings.displayCurrencies) || [];
+  const main = mainCurrency();
+  const parts = chosen.filter((c) => c !== main).map((code) => {
+    const v = convertAmount(amountInMain, main, code);
+    return v === null ? null : fmtMoney(v, code);
+  }).filter(Boolean);
+  return parts.length ? "≈ " + parts.join(" · ") : "";
+}
+/* Warns rather than hiding: a total silently missing an account is worse than a visible gap. */
+function renderMissingRateWarning() {
+  const el = document.getElementById("rateWarning");
+  if (!el) return;
+  const codes = Array.from(missingRateCodes);
+  if (!codes.length) { el.style.display = "none"; el.textContent = ""; return; }
+  el.style.display = "";
+  el.textContent = `⚠ No exchange rate set for ${codes.join(", ")}. Money in ${codes.length === 1 ? "that currency is" : "those currencies are"} left OUT of the totals below until you set the rate on the Accounts tab.`;
+}
 function getCategory(id) { return db.categories.find((c) => c.id === id); }
 function categoryAndChildIds(catId) { const ids = [catId]; db.categories.forEach((c) => { if (c.parentId === catId) ids.push(c.id); }); return ids; }
 function categoryDisplayName(cat) {
@@ -1021,7 +1118,18 @@ function accountBalanceBefore(accountId, dateStr) { const acc = getAccount(accou
 /* Skips accounts flagged "don't include in Total Balance" — holding accounts for spending that
    predates tracking (Section 3.13). accountCurrentBalance itself is deliberately untouched, so every
    per-account figure, the carry-forward table and Reconcile all behave exactly as before. */
-function totalNetWorth(bucket) { return round2(db.accounts.filter((a) => (a.bucket || "personal") === (bucket || "personal") && !a.excludeFromBalance).reduce((sum, a) => sum + accountCurrentBalance(a.id), 0)); }
+/* Each account's balance is in its OWN currency, so it must be converted before adding (3.15).
+   A missing rate excludes that account and raises a warning rather than being counted 1:1. */
+function totalNetWorth(bucket) {
+  return round2(db.accounts
+    .filter((a) => (a.bucket || "personal") === (bucket || "personal") && !a.excludeFromBalance)
+    .reduce((sum, a) => {
+      const code = a.currency || mainCurrency();
+      const v = convertAmount(accountCurrentBalance(a.id), code, mainCurrency());
+      if (v === null) { missingRateCodes.add(code); return sum; }
+      return sum + v;
+    }, 0));
+}
 function lastReconciledDate(accountId) { const recs = db.reconciliations.filter((r) => r.accountId === accountId).sort((a, b) => (a.date < b.date ? 1 : -1)); return recs.length ? recs[0].date : null; }
 
 let toastTimer = null;
@@ -1106,8 +1214,8 @@ document.getElementById("dashNextMonth").addEventListener("click", () => { dashM
 function renderDashboard() {
   document.getElementById("dashMonthLabel").textContent = monthLabel(dashMonth);
   const monthTx = db.transactions.filter((t) => monthKey(t.date) === dashMonth && (t.bucket || "personal") === "personal" && countsInTotals(t));
-  const monthIncome = monthTx.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
-  const monthExpense = monthTx.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0);
+  const monthIncome = monthTx.filter((t) => t.type === "income").reduce((s, t) => s + txAmountInMain(t), 0);
+  const monthExpense = monthTx.filter((t) => t.type === "expense").reduce((s, t) => s + txAmountInMain(t), 0);
   const savingsRate = monthIncome > 0 ? ((monthIncome - monthExpense) / monthIncome) * 100 : 0;
   document.getElementById("statIncome").textContent = fmtMoney(monthIncome);
   document.getElementById("statExpense").textContent = fmtMoney(monthExpense);
@@ -1126,7 +1234,7 @@ function renderAccountsOverview(wrapId, bucket) {
   if (accounts.length === 0) { wrap.innerHTML = `<div class="empty-state">No ${bucket} accounts yet. Add one from the Accounts tab.</div>`; return; }
   wrap.innerHTML = accounts.map((a) => {
     const bal = accountCurrentBalance(a.id);
-    return `<div class="acc-row"><span><span class="cat-dot" style="background:${a.color}"></span> ${a.name}</span><span class="amount ${bal < 0 ? "expense" : "income"}">${fmtMoney(bal)}</span></div>`;
+    return `<div class="acc-row"><span><span class="cat-dot" style="background:${a.color}"></span> ${a.name}</span><span class="amount ${bal < 0 ? "expense" : "income"}">${fmtMoney(bal, a.currency)}</span></div>`;
   }).join("");
 }
 
@@ -1134,7 +1242,7 @@ function renderDonutChart(monthTx, wrapId) {
   const wrap = document.getElementById(wrapId);
   const expenses = monthTx.filter((t) => t.type === "expense");
   const byCat = {};
-  expenses.forEach((t) => { byCat[t.categoryId] = (byCat[t.categoryId] || 0) + t.amount; });
+  expenses.forEach((t) => { byCat[t.categoryId] = (byCat[t.categoryId] || 0) + txAmountInMain(t); });
   const entries = Object.entries(byCat).map(([catId, value]) => ({ cat: getCategory(catId), value })).filter((e) => e.cat).sort((a, b) => b.value - a.value);
   if (entries.length === 0) { wrap.innerHTML = `<div class="empty-state">No expenses recorded this month.</div>`; return; }
   const total = entries.reduce((s, e) => s + e.value, 0);
@@ -1163,7 +1271,7 @@ function renderBarChart(refMonth, wrapId, bucket) {
   for (let i = 5; i >= 0; i--) months.push(shiftMonth(refMonth, -i));
   const data = months.map((m) => {
     const tx = db.transactions.filter((t) => monthKey(t.date) === m && (t.bucket || "personal") === (bucket || "personal") && countsInTotals(t));
-    return { month: m, income: tx.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0), expense: tx.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0) };
+    return { month: m, income: tx.filter((t) => t.type === "income").reduce((s, t) => s + txAmountInMain(t), 0), expense: tx.filter((t) => t.type === "expense").reduce((s, t) => s + txAmountInMain(t), 0) };
   });
   const max = Math.max(1, ...data.map((d) => Math.max(d.income, d.expense)));
   const w = 480, h = 200, padBottom = 24, padTop = 10;
@@ -1193,7 +1301,7 @@ function renderBudgetProgress(month, containerId) {
     const cat = getCategory(b.categoryId);
     if (!cat) return "";
     const catIds = categoryAndChildIds(b.categoryId);
-    const spent = monthTx.filter((t) => catIds.includes(t.categoryId)).reduce((s, t) => s + t.amount, 0);
+    const spent = monthTx.filter((t) => catIds.includes(t.categoryId)).reduce((s, t) => s + txAmountInMain(t), 0);
     totalBudget += b.amount; totalSpent += spent;
     const pct = b.amount > 0 ? Math.min(100, (spent / b.amount) * 100) : 0;
     const color = spent > b.amount ? "var(--expense)" : pct > 80 ? "var(--warn)" : "var(--income)";
@@ -1222,7 +1330,7 @@ function renderRecentTransactions(wrapId, bucket) {
   if (recent.length === 0) { wrap.innerHTML = `<div class="empty-state">No transactions yet. Add one from the Transactions tab.</div>`; return; }
   wrap.innerHTML = recent.map((t) => {
     const cat = getCategory(t.categoryId), acc = getAccount(t.accountId);
-    return `<div class="tx-row"><span><span class="cat-dot" style="background:${cat ? cat.color : "#999"}"></span>${t.description || categoryDisplayName(cat)}<div class="tx-meta">${t.date} · ${cat ? categoryDisplayName(cat) : ""}${acc ? " · " + acc.name : ""}</div></span><span class="amount ${t.type}">${t.type === "income" ? "+" : "-"}${fmtMoney(t.amount)}</span></div>`;
+    return `<div class="tx-row"><span><span class="cat-dot" style="background:${cat ? cat.color : "#999"}"></span>${t.description || categoryDisplayName(cat)}<div class="tx-meta">${t.date} · ${cat ? categoryDisplayName(cat) : ""}${acc ? " · " + acc.name : ""}</div></span><span class="amount ${t.type}">${t.type === "income" ? "+" : "-"}${fmtMoney(t.amount, accountCurrency(t.accountId))}</span></div>`;
   }).join("");
 }
 
@@ -1234,12 +1342,15 @@ document.getElementById("bizNextMonth").addEventListener("click", () => { bizMon
 function renderBusinessView() {
   document.getElementById("bizMonthLabel").textContent = monthLabel(bizMonth);
   const monthTx = db.transactions.filter((t) => monthKey(t.date) === bizMonth && (t.bucket || "personal") === "business" && countsInTotals(t));
-  const income = monthTx.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
-  const expense = monthTx.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0);
+  const income = monthTx.filter((t) => t.type === "income").reduce((s, t) => s + txAmountInMain(t), 0);
+  const expense = monthTx.filter((t) => t.type === "expense").reduce((s, t) => s + txAmountInMain(t), 0);
   document.getElementById("bizIncome").textContent = fmtMoney(income);
   document.getElementById("bizExpense").textContent = fmtMoney(expense);
   document.getElementById("bizNet").textContent = fmtMoney(income - expense);
-  document.getElementById("bizBalance").textContent = fmtMoney(totalNetWorth("business"));
+  const bizTotal = totalNetWorth("business");
+  document.getElementById("bizBalance").textContent = fmtMoney(bizTotal);
+  const bizConv = conversionLine(bizTotal);
+  document.getElementById("bizBalanceConverted").textContent = bizConv ? "All time · " + bizConv : "All time";
   renderDonutChart(monthTx, "bizDonutWrap");
   renderBarChart(bizMonth, "bizBarWrap", "business");
   renderAccountsOverview("bizAccountsWrap", "business");
@@ -1263,7 +1374,7 @@ document.getElementById("accountForm").addEventListener("submit", (e) => {
   const openingDate = document.getElementById("accOpeningDate").value || todayISO();
   const color = document.getElementById("accColor").value;
   if (!name) return;
-  db.accounts.push({ id: uid(), name, bucket, type, openingBalance, openingDate, color, excludeFromBalance: document.getElementById("accExclude").checked });
+  db.accounts.push({ id: uid(), name, bucket, type, openingBalance, openingDate, color, excludeFromBalance: document.getElementById("accExclude").checked, currency: document.getElementById("accCurrency").value || mainCurrency() });
   saveData();
   e.target.reset();
   document.getElementById("accColor").value = "#3b82f6";
@@ -1311,13 +1422,111 @@ document.getElementById("crossForm").addEventListener("submit", (e) => {
   const transferId = uid();
   /* Each half belongs to its own account's ledger — that is what makes this cross-ledger, and it
      keeps each half wholly inside its own ledger's reports (Section 4 rule 2). */
+  /* Different currencies mean different amounts on each side (Section 3.15). */
+  const received = receivedAmountFor(fromId, toId, amount, "crossReceived");
+  if (received === null) { alert(`No exchange rate is set between ${accountCurrency(fromId)} and ${accountCurrency(toId)}.\n\nEither set the rate in "Currencies & Exchange Rates" above, or type the amount received.`); return; }
   db.transactions.push({ id: uid(), type: "expense", date, accountId: fromId, categoryId: ensureTransferCategory("expense", fromBucket), amount, description, bucket: fromBucket, transferId });
-  db.transactions.push({ id: uid(), type: "income", date, accountId: toId, categoryId: ensureTransferCategory("income", toBucket), amount, description, bucket: toBucket, transferId });
+  db.transactions.push({ id: uid(), type: "income", date, accountId: toId, categoryId: ensureTransferCategory("income", toBucket), amount: received, description, bucket: toBucket, transferId });
   saveData();
   document.getElementById("crossAmount").value = "";
+  document.getElementById("crossReceived").value = ""; document.getElementById("crossReceived").dataset.touched = "";
   document.getElementById("crossDescription").value = "";
   renderAccountsView(); renderAll();
   toast(`Transferred ${fmtMoney(amount)} from ${from.name} (${fromBucket}) to ${to.name} (${toBucket})`);
+});
+
+/* Shows the second amount box only when the two accounts use different currencies, pre-filling it
+   from the saved rate as a suggestion the user corrects to what actually arrived (Section 3.15). */
+function syncTransferCurrencyUI(fromId, toId, amountId, amountLabelId, recvId, recvLabelId) {
+  const fromSel = document.getElementById(fromId), toSel = document.getElementById(toId);
+  const amountEl = document.getElementById(amountId), recvEl = document.getElementById(recvId);
+  const amountLabel = document.getElementById(amountLabelId), recvLabel = document.getElementById(recvLabelId);
+  if (!fromSel || !toSel || !recvLabel) return;
+  const fc = accountCurrency(fromSel.value), tc = accountCurrency(toSel.value);
+  const differ = !!(fc && tc && fc !== tc);
+  recvLabel.style.display = differ ? "" : "none";
+  amountLabel.firstChild.textContent = differ ? `Amount sent (${fc}) ` : "Amount ";
+  if (!differ) return;
+  recvLabel.firstChild.textContent = `Amount received (${tc}) `;
+  if (recvEl.dataset.touched === "1") return;
+  const amt = parseFloat(amountEl.value);
+  if (!Number.isFinite(amt) || amt <= 0) { recvEl.value = ""; return; }
+  const suggested = convertAmount(amt, fc, tc);
+  recvEl.value = suggested === null ? "" : suggested.toFixed(2);
+}
+function wireTransferCurrencyUI(fromId, toId, amountId, amountLabelId, recvId, recvLabelId) {
+  const refresh = () => syncTransferCurrencyUI(fromId, toId, amountId, amountLabelId, recvId, recvLabelId);
+  ["change", "input"].forEach((ev) => {
+    document.getElementById(fromId).addEventListener(ev, refresh);
+    document.getElementById(toId).addEventListener(ev, refresh);
+    document.getElementById(amountId).addEventListener(ev, refresh);
+  });
+  /* Once the user edits the received box we stop overwriting it — their bank's figure wins. */
+  document.getElementById(recvId).addEventListener("input", (e) => { e.target.dataset.touched = "1"; });
+}
+wireTransferCurrencyUI("crossFrom", "crossTo", "crossAmount", "crossAmountLabel", "crossReceived", "crossReceivedLabel");
+wireTransferCurrencyUI("trFromAccount", "trToAccount", "trAmount", "trAmountLabel", "trReceived", "trReceivedLabel");
+
+/* Resolves what actually lands in the destination account. Same currency -> the same amount. */
+function receivedAmountFor(fromId, toId, sentAmount, recvId) {
+  const fc = accountCurrency(fromId), tc = accountCurrency(toId);
+  if (fc === tc) return sentAmount;
+  const typed = parseFloat(document.getElementById(recvId).value);
+  if (Number.isFinite(typed) && typed > 0) return typed;
+  const suggested = convertAmount(sentAmount, fc, tc);
+  return suggested === null ? null : round2(suggested);
+}
+
+/* ===== Currency settings UI (Section 3.15) ===== */
+function renderCurrencySettings() {
+  const main = mainCurrency();
+  const ms = document.getElementById("mainCurrencySelect");
+  ms.innerHTML = CURRENCIES.map((c) => `<option value="${c.code}">${c.code} (${c.symbol})</option>`).join("");
+  ms.value = main;
+  const chosen = (db.settings.displayCurrencies || []);
+  document.getElementById("displayCurrencyChecks").innerHTML = CURRENCIES.filter((c) => c.code !== main)
+    .map((c) => `<label style="display:flex;align-items:center;gap:4px;font-weight:400;"><input type="checkbox" class="disp-cur" value="${c.code}" ${chosen.includes(c.code) ? "checked" : ""} style="width:auto;min-width:0;">${c.code}</label>`).join("");
+  const rates = db.settings.rates || {};
+  document.getElementById("rateInputs").innerHTML = CURRENCIES.filter((c) => c.code !== "PKR")
+    .map((c) => `<label>1 ${c.code} = <input type="number" step="0.0001" min="0" class="rate-input" data-code="${c.code}" value="${rates[c.code] !== undefined ? rates[c.code] : ""}" placeholder="PKR"></label>`).join("");
+  const accCur = document.getElementById("accCurrency");
+  if (accCur) {
+    const prev = accCur.value;
+    accCur.innerHTML = CURRENCIES.map((c) => `<option value="${c.code}">${c.code}</option>`).join("");
+    accCur.value = prev || main;
+  }
+}
+
+document.getElementById("saveRatesBtn").addEventListener("click", () => {
+  const rates = {};
+  document.querySelectorAll(".rate-input").forEach((i) => { const v = parseFloat(i.value); if (Number.isFinite(v) && v > 0) rates[i.dataset.code] = v; });
+  db.settings.rates = rates;
+  db.settings.currency = document.getElementById("mainCurrencySelect").value;
+  db.settings.displayCurrencies = Array.from(document.querySelectorAll(".disp-cur")).filter((c) => c.checked).map((c) => c.value);
+  saveData();
+  renderCurrencySettings(); renderAll();
+  toast("Currency settings saved");
+});
+
+/* User-initiated only — never called automatically, so the app still works offline and depends on
+   no outside service for normal operation. A failure leaves the typed rates untouched (3.15). */
+document.getElementById("fetchRatesBtn").addEventListener("click", async () => {
+  const status = document.getElementById("ratesStatus");
+  status.textContent = "Fetching…";
+  try {
+    const res = await fetch("https://open.er-api.com/v6/latest/PKR");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    if (!data || !data.rates) throw new Error("unexpected response");
+    let filled = 0;
+    document.querySelectorAll(".rate-input").forEach((i) => {
+      const perPkr = Number(data.rates[i.dataset.code]);
+      if (Number.isFinite(perPkr) && perPkr > 0) { i.value = (1 / perPkr).toFixed(4); filled++; }
+    });
+    status.textContent = filled ? `Filled ${filled} rate${filled === 1 ? "" : "s"} — check them, then press Save Rates.` : "No usable rates returned.";
+  } catch (err) {
+    status.textContent = "Couldn't fetch rates (offline, or the service is unavailable). Your typed rates are unchanged — enter them by hand.";
+  }
 });
 
 /* Accounts have no edit form (only add/delete, and delete is blocked once transactions exist), so an
@@ -1358,7 +1567,13 @@ function submitReconcile(accountId) {
 function renderAccountsView() {
   document.getElementById("accountsMonthLabel").textContent = monthLabel(accountsMonth);
   if (!document.getElementById("accOpeningDate").value) document.getElementById("accOpeningDate").value = todayISO();
-  document.getElementById("accountsTotalBalance").textContent = fmtMoney(totalNetWorth("personal"));
+  missingRateCodes = new Set();
+  const personalTotal = totalNetWorth("personal");
+  document.getElementById("accountsTotalBalance").textContent = fmtMoney(personalTotal);
+  const conv = conversionLine(personalTotal);
+  document.getElementById("accountsTotalConverted").textContent = conv ? "All time · " + conv : "All time";
+  renderCurrencySettings();
+  renderMissingRateWarning();
   renderOutstandingLoans();
   /* Repopulating wipes the selection, so preserve it; default To to the opposite ledger's first account. */
   const cFrom = document.getElementById("crossFrom"), cTo = document.getElementById("crossTo");
@@ -1384,7 +1599,7 @@ function renderAccountsView() {
         <div class="account-card-top">
           <div>
             <div class="account-name-row"><span class="cat-dot" style="background:${a.color}"></span>${a.name}<span class="account-type-badge">${accountTypeLabel(a.type)}</span><span class="account-type-badge">${a.bucket === "business" ? "Business" : "Personal"}</span>${a.excludeFromBalance ? `<span class="account-type-badge" title="This account's balance is left out of Total Balance. Its transactions still count as income/expense.">not in total</span>` : ""}</div>
-            <div class="account-balance amount ${bal < 0 ? "expense" : "income"}">${fmtMoney(bal)}</div>
+            <div class="account-balance amount ${bal < 0 ? "expense" : "income"}">${fmtMoney(bal, a.currency)}</div>
             <div class="account-meta">${lastRec ? "Last reconciled: " + lastRec : "Not reconciled yet"}</div>
           </div>
           <div class="account-actions">
@@ -1411,7 +1626,7 @@ function renderAccountsView() {
       const inflow = monthTx.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
       const outflow = monthTx.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0);
       const closing = round2(opening + inflow - outflow);
-      return `<tr><td><span class="cat-badge"><span class="cat-dot" style="background:${a.color}"></span>${a.name}</span></td><td class="amount">${fmtMoney(opening)}</td><td class="amount income">+${fmtMoney(inflow)}</td><td class="amount expense">-${fmtMoney(outflow)}</td><td class="amount ${closing < 0 ? "expense" : "income"}">${fmtMoney(closing)}</td></tr>`;
+      return `<tr><td><span class="cat-badge"><span class="cat-dot" style="background:${a.color}"></span>${a.name}</span></td><td class="amount">${fmtMoney(opening, a.currency)}</td><td class="amount income">+${fmtMoney(inflow, a.currency)}</td><td class="amount expense">-${fmtMoney(outflow, a.currency)}</td><td class="amount ${closing < 0 ? "expense" : "income"}">${fmtMoney(closing, a.currency)}</td></tr>`;
     }).join("");
   }
 }
@@ -1560,7 +1775,10 @@ function creditAllocation(panel) {
     .sort(byDateThenId)
     .map((p) => {
       const bought = Number(p.credits);
-      return { id: p.id, date: p.date, description: p.description || "", amount: p.amount, bought, unitCost: p.amount / bought, used: 0 };
+      /* Costed in the main currency so a purchase and a sale booked on accounts of different
+         currencies still combine correctly (3.15). */
+      const amountInMain = txAmountInMain(p);
+      return { id: p.id, date: p.date, description: p.description || "", amount: amountInMain, bought, unitCost: amountInMain / bought, used: 0 };
     });
   const sales = bizTx()
     .filter((t) => t.type === "income" && t.panel === panel && Number(t.credits) > 0)
@@ -1618,9 +1836,9 @@ function buildDeals(period, allocations) {
     if (sale.ref) {
       if (usedRefs.has(sale.ref)) return;
       usedRefs.add(sale.ref);
-      const income = all.filter((t) => t.type === "income" && t.ref === sale.ref).reduce((s, t) => s + t.amount, 0);
+      const income = all.filter((t) => t.type === "income" && t.ref === sale.ref).reduce((s, t) => s + txAmountInMain(t), 0);
       const costRows = all.filter((t) => t.type === "expense" && t.ref === sale.ref);
-      const otherCost = costRows.reduce((s, t) => s + t.amount, 0);
+      const otherCost = costRows.reduce((s, t) => s + txAmountInMain(t), 0);
       /* Every income row sharing this ref may carry its own credits. */
       const creditCost = all.filter((t) => t.type === "income" && t.ref === sale.ref)
         .reduce((s, t) => { const c = creditCostForSale(t, allocations); return s + (c ? c.cost : 0); }, 0);
@@ -1631,7 +1849,7 @@ function buildDeals(period, allocations) {
         panel: sale.panel || "", credits: Number(sale.credits) || 0 });
     } else if (credit) {
       deals.push({ key: sale.id, label: sale.description || `${sale.panel} sale`, date: sale.date, kind: "iptv",
-        description: sale.description || "", income: sale.amount, costRows: [], otherCost: 0,
+        description: sale.description || "", income: txAmountInMain(sale), costRows: [], otherCost: 0,
         creditCost: credit.cost, shortfall: credit.shortfall, panel: sale.panel, credits: Number(sale.credits) });
     }
   });
@@ -1645,7 +1863,7 @@ function buildDeals(period, allocations) {
 
   /* Sales with neither a ref nor credits have no attributable cost — counted, never dropped. */
   const unattributed = salesThisMonth.filter((t) => !t.ref && !creditCostForSale(t, allocations));
-  return { deals, unattributed: { count: unattributed.length, amount: round2(unattributed.reduce((s, t) => s + t.amount, 0)) } };
+  return { deals, unattributed: { count: unattributed.length, amount: round2(unattributed.reduce((s, t) => s + txAmountInMain(t), 0)) } };
 }
 
 /* The Ref/Panel/Credits row exists only for Business — personal entry stays exactly as simple as before. */
@@ -1752,8 +1970,8 @@ function countsInTotals(t) { return !isTransferTx(t) && !isExcludedTx(t); }
 function renderOutstandingLoans() {
   const block = document.getElementById("accountsOutstandingBlock");
   const flagged = db.transactions.filter((t) => (t.bucket || "personal") === "personal" && isExcludedTx(t));
-  const out = flagged.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0);
-  const back = flagged.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
+  const out = flagged.filter((t) => t.type === "expense").reduce((s, t) => s + txAmountInMain(t), 0);
+  const back = flagged.filter((t) => t.type === "income").reduce((s, t) => s + txAmountInMain(t), 0);
   const net = round2(out - back);
   /* Clear the figure as well as hiding it — a stale amount left in a hidden element is exactly the
      kind of thing that resurfaces later looking authoritative. */
@@ -1784,10 +2002,14 @@ document.getElementById("transferForm").addEventListener("submit", (e) => {
   const from = getAccount(fromId), to = getAccount(toId);
   const description = typed || `Transfer: ${from ? from.name : "?"} → ${to ? to.name : "?"}`;
   const transferId = uid();
+  /* Same ledger can still mean different currencies — e.g. a PKR and an AED personal account. */
+  const received = receivedAmountFor(fromId, toId, amount, "trReceived");
+  if (received === null) { alert(`No exchange rate is set between ${accountCurrency(fromId)} and ${accountCurrency(toId)}.\n\nEither set the rate on the Accounts tab, or type the amount received.`); return; }
   db.transactions.push({ id: uid(), type: "expense", date, accountId: fromId, categoryId: ensureTransferCategory("expense", bucket), amount, description, bucket, transferId });
-  db.transactions.push({ id: uid(), type: "income", date, accountId: toId, categoryId: ensureTransferCategory("income", bucket), amount, description, bucket, transferId });
+  db.transactions.push({ id: uid(), type: "income", date, accountId: toId, categoryId: ensureTransferCategory("income", bucket), amount: received, description, bucket, transferId });
   saveData();
   document.getElementById("trAmount").value = "";
+  document.getElementById("trReceived").value = ""; document.getElementById("trReceived").dataset.touched = "";
   document.getElementById("trDescription").value = "";
   renderTransactionsView(); renderDashboard(); renderBusinessView(); renderAccountsView();
   toast(`Transferred ${fmtMoney(amount)} from ${from ? from.name : "account"} to ${to ? to.name : "account"}`);
@@ -1807,7 +2029,10 @@ document.getElementById("markTransferTxBtn").addEventListener("click", () => {
   }
   if (a.transferId || b.transferId) { alert("One of the selected transactions is already part of a different transfer. Select that pair on its own first to unmark it."); return; }
   if (a.type === b.type) { alert(`A transfer needs one income and one expense — money leaving one account and arriving in another. Both of these are ${a.type}s.`); return; }
-  if (round2(a.amount) !== round2(b.amount)) { alert(`The two amounts must match. You selected ${fmtMoney(a.amount)} and ${fmtMoney(b.amount)}.`); return; }
+  /* Equal amounts are only required when both sides share a currency — a cross-currency pair
+     legitimately has different amounts on each side (Section 3.15). */
+  const aCur = accountCurrency(a.accountId), bCur = accountCurrency(b.accountId);
+  if (aCur === bCur && round2(a.amount) !== round2(b.amount)) { alert(`The two amounts must match. You selected ${fmtMoney(a.amount, aCur)} and ${fmtMoney(b.amount, bCur)}.`); return; }
   if (a.accountId === b.accountId) { alert("Both transactions are on the same account, so no money actually moved between accounts."); return; }
   /* Cross-ledger pairs are allowed here (Section 3.14) so a business<->personal movement entered by
      hand can be corrected retroactively, exactly like a same-ledger one. */
@@ -1972,7 +2197,7 @@ function renderTransactionsTable() {
   if (rows.length === 0) { tbody.innerHTML = `<tr><td colspan="7" class="empty-state">No transactions match your filters.</td></tr>`; updateTxBulkBar(); return; }
   tbody.innerHTML = rows.map((t) => {
     const cat = getCategory(t.categoryId), acc = getAccount(t.accountId);
-    return `<tr><td><input type="checkbox" class="row-check" data-id="${t.id}" ${selectedTxIds.has(t.id) ? "checked" : ""} onchange="toggleTxSelect('${t.id}', this.checked)"></td><td>${t.date}</td><td>${acc ? acc.name : "—"}</td><td><span class="cat-badge"><span class="cat-dot" style="background:${cat ? cat.color : "#999"}"></span>${categoryDisplayName(cat)}</span></td><td>${t.transferId ? `<span title="Transfer between your own accounts — not counted as income or expense" style="font-size:11px;color:var(--text-muted);border:1px solid var(--border);border-radius:4px;padding:1px 5px;margin-right:6px;white-space:nowrap;">⇄ Transfer</span>` : ""}${t.description || ""}</td><td class="amount ${t.type}">${t.type === "income" ? "+" : "-"}${fmtMoney(t.amount)}</td><td class="row-actions"><button class="icon-link" onclick="editTransaction('${t.id}')">Edit</button><button class="icon-link danger" onclick="deleteTransaction('${t.id}')">Delete</button></td></tr>`;
+    return `<tr><td><input type="checkbox" class="row-check" data-id="${t.id}" ${selectedTxIds.has(t.id) ? "checked" : ""} onchange="toggleTxSelect('${t.id}', this.checked)"></td><td>${t.date}</td><td>${acc ? acc.name : "—"}</td><td><span class="cat-badge"><span class="cat-dot" style="background:${cat ? cat.color : "#999"}"></span>${categoryDisplayName(cat)}</span></td><td>${t.transferId ? `<span title="Transfer between your own accounts — not counted as income or expense" style="font-size:11px;color:var(--text-muted);border:1px solid var(--border);border-radius:4px;padding:1px 5px;margin-right:6px;white-space:nowrap;">⇄ Transfer</span>` : ""}${t.description || ""}</td><td class="amount ${t.type}">${t.type === "income" ? "+" : "-"}${fmtMoney(t.amount, accountCurrency(t.accountId))}</td><td class="row-actions"><button class="icon-link" onclick="editTransaction('${t.id}')">Edit</button><button class="icon-link danger" onclick="deleteTransaction('${t.id}')">Delete</button></td></tr>`;
   }).join("");
   updateTxBulkBar();
 }
@@ -1990,7 +2215,7 @@ function renderBudgetsView() {
   const rows = expenseCats.map((cat) => {
     const budget = db.budgets.find((b) => b.categoryId === cat.id && b.month === budgetMonth);
     const catIds = categoryAndChildIds(cat.id);
-    const spent = monthTx.filter((t) => catIds.includes(t.categoryId)).reduce((s, t) => s + t.amount, 0);
+    const spent = monthTx.filter((t) => catIds.includes(t.categoryId)).reduce((s, t) => s + txAmountInMain(t), 0);
     if (budget) { totalBudget += budget.amount; totalSpent += spent; }
     return `<div class="budget-list-item"><div><div class="budget-row-top"><span class="cat-name" title="${categoryDisplayName(cat)}"><span class="cat-dot" style="background:${cat.color}"></span> ${categoryDisplayName(cat)}</span><span class="budget-amounts">Spent: ${fmtMoney(spent)}</span></div><div class="progress-track"><div class="progress-fill" style="width:${budget && budget.amount > 0 ? Math.min(100, (spent / budget.amount) * 100) : 0}%;background:${budget && spent > budget.amount ? "var(--expense)" : "var(--income)"}"></div></div></div><input type="number" min="0" step="0.01" placeholder="Budget amount" value="${budget ? budget.amount : ""}" data-cat="${cat.id}" onchange="setBudget('${cat.id}', this.value)"></div>`;
   }).join("");
@@ -2081,8 +2306,8 @@ function renderYearlyView() {
   const fyMonths = new Set(fiscalYearMonths(fyStartMonth));
   const fyTx = db.transactions.filter((t) => fyMonths.has(monthKey(t.date)) && (t.bucket || "personal") === yearlyLedger && countsInTotals(t));
 
-  const income = fyTx.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
-  const expense = fyTx.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0);
+  const income = fyTx.filter((t) => t.type === "income").reduce((s, t) => s + txAmountInMain(t), 0);
+  const expense = fyTx.filter((t) => t.type === "expense").reduce((s, t) => s + txAmountInMain(t), 0);
   const net = income - expense;
   const rate = income > 0 ? (net / income) * 100 : 0;
 
@@ -2107,7 +2332,7 @@ function renderYearlyView() {
 function renderFyDonut(fyTx) {
   const wrap = document.getElementById("fyDonutWrap");
   const byCat = {};
-  fyTx.filter((t) => t.type === "expense").forEach((t) => { byCat[t.categoryId] = (byCat[t.categoryId] || 0) + t.amount; });
+  fyTx.filter((t) => t.type === "expense").forEach((t) => { byCat[t.categoryId] = (byCat[t.categoryId] || 0) + txAmountInMain(t); });
   const entries = Object.entries(byCat).map(([catId, value]) => ({ cat: getCategory(catId), value })).filter((e) => e.cat).sort((a, b) => b.value - a.value);
   if (entries.length === 0) { wrap.innerHTML = `<div class="empty-state">No expenses recorded in this fiscal year.</div>`; return; }
   const total = entries.reduce((s, e) => s + e.value, 0);
@@ -2135,7 +2360,7 @@ function renderFyBar() {
   const months = fiscalYearMonths(fyStartMonth);
   const data = months.map((m) => {
     const tx = db.transactions.filter((t) => monthKey(t.date) === m && (t.bucket || "personal") === yearlyLedger && countsInTotals(t));
-    return { month: m, income: tx.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0), expense: tx.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0) };
+    return { month: m, income: tx.filter((t) => t.type === "income").reduce((s, t) => s + txAmountInMain(t), 0), expense: tx.filter((t) => t.type === "expense").reduce((s, t) => s + txAmountInMain(t), 0) };
   });
   const max = Math.max(1, ...data.map((d) => Math.max(d.income, d.expense)));
   const w = 620, h = 220, padBottom = 26, padTop = 10;
@@ -2166,7 +2391,7 @@ function renderFyBudgets(fyMonths) {
   const rows = expenseCats.filter((c) => catIdsWithBudget.has(c.id)).map((cat) => {
     const budgetTotal = fyBudgets.filter((b) => b.categoryId === cat.id).reduce((s, b) => s + b.amount, 0);
     const catIds = categoryAndChildIds(cat.id);
-    const spent = fyExpenseTx.filter((t) => catIds.includes(t.categoryId)).reduce((s, t) => s + t.amount, 0);
+    const spent = fyExpenseTx.filter((t) => catIds.includes(t.categoryId)).reduce((s, t) => s + txAmountInMain(t), 0);
     totalBudget += budgetTotal; totalSpent += spent;
     const pct = budgetTotal > 0 ? Math.min(100, (spent / budgetTotal) * 100) : 0;
     const color = spent > budgetTotal ? "var(--expense)" : pct > 80 ? "var(--warn)" : "var(--income)";
@@ -2187,7 +2412,7 @@ function renderFyAccounts() {
     const fyTx = db.transactions.filter((t) => t.accountId === a.id && t.date >= fyStartDate && t.date < fyEndExclusive);
     const inflow = fyTx.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
     const outflow = fyTx.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0);
-    return `<tr><td><span class="cat-badge"><span class="cat-dot" style="background:${a.color}"></span>${a.name}</span></td><td class="amount">${fmtMoney(opening)}</td><td class="amount income">+${fmtMoney(inflow)}</td><td class="amount expense">-${fmtMoney(outflow)}</td><td class="amount ${closing < 0 ? "expense" : "income"}">${fmtMoney(closing)}</td></tr>`;
+    return `<tr><td><span class="cat-badge"><span class="cat-dot" style="background:${a.color}"></span>${a.name}</span></td><td class="amount">${fmtMoney(opening, a.currency)}</td><td class="amount income">+${fmtMoney(inflow, a.currency)}</td><td class="amount expense">-${fmtMoney(outflow, a.currency)}</td><td class="amount ${closing < 0 ? "expense" : "income"}">${fmtMoney(closing, a.currency)}</td></tr>`;
   }).join("");
 }
 
@@ -2387,7 +2612,7 @@ function renderCategoriesView() {
 
 const SHEET_TABS = {
   Categories: ["id", "name", "type", "color", "parentId", "order", "bucket", "excludeFromTotals"],
-  Accounts: ["id", "name", "type", "openingBalance", "openingDate", "color", "bucket", "excludeFromBalance"],
+  Accounts: ["id", "name", "type", "openingBalance", "openingDate", "color", "bucket", "excludeFromBalance", "currency"],
   Transactions: ["id", "type", "date", "accountId", "categoryId", "amount", "description", "isReconciliation", "bucket", "transferId", "ref", "panel", "credits"],
   Budgets: ["id", "categoryId", "month", "amount"],
   Reconciliations: ["id", "accountId", "date", "actualBalance", "computedBefore", "diff"],
@@ -2429,6 +2654,7 @@ async function onTokenResponse(resp) {
   try {
     await ensureSheetStructure();
     const sheetData = coerceTypesFromSheet(await readAllFromSheet());
+    ensureCurrencies(sheetData);
     seedBusinessCategories(sheetData);
     repairOrphanedParents(sheetData);
     repairReconciliationBuckets(sheetData);
@@ -2483,23 +2709,42 @@ async function readAllFromSheet() {
 }
 
 function coerceTypesFromSheet(raw) {
+  /* Settings are parsed FIRST because accounts fall back to the main currency (Section 3.15).
+     The Settings tab now holds several key/value rows; a sheet containing only the old single
+     `currency` row still loads, leaving rates empty and display currencies none. */
+  const settingRow = (key) => { const r = raw.Settings.find((x) => x.key === key); return r ? r.value : undefined; };
+  const settingsCurrency = settingRow("currency") || "PKR";
+  let settingsRates = {};
+  try { const raw2 = settingRow("rates"); if (raw2) settingsRates = JSON.parse(raw2) || {}; } catch (e) { settingsRates = {}; }
+  Object.keys(settingsRates).forEach((k) => { const v = Number(settingsRates[k]); if (Number.isFinite(v) && v > 0) settingsRates[k] = v; else delete settingsRates[k]; });
+  const settingsDisplay = String(settingRow("displayCurrencies") || "").split(",").map((s) => s.trim()).filter(Boolean);
+
   const categories = raw.Categories.filter((r) => r.id).map((r) => ({ id: r.id, name: r.name, type: r.type, color: r.color, parentId: r.parentId ? r.parentId : null, order: r.order !== "" && r.order !== undefined && r.order !== null ? Number(r.order) : undefined, bucket: r.bucket || "personal",
     /* Missing column (a sheet written before this field existed) yields undefined -> false. Same
        string-compare pattern as isReconciliation, proven in production since July (Section 3.12). */
     excludeFromTotals: String(r.excludeFromTotals).toUpperCase() === "TRUE" }));
   const accounts = raw.Accounts.filter((r) => r.id).map((r) => ({ id: r.id, name: r.name, type: r.type, openingBalance: parseFloat(r.openingBalance) || 0, openingDate: r.openingDate, color: r.color, bucket: r.bucket || "personal",
     /* Missing column (a sheet written before this field existed) yields undefined -> false (Section 3.13). */
-    excludeFromBalance: String(r.excludeFromBalance).toUpperCase() === "TRUE" }));
+    excludeFromBalance: String(r.excludeFromBalance).toUpperCase() === "TRUE",
+    /* Missing column (a sheet written before this field existed) falls back to the main currency,
+       which is correct: all pre-existing accounts were in it (Section 3.15). */
+    currency: r.currency ? String(r.currency) : settingsCurrency }));
   const transactions = raw.Transactions.filter((r) => r.id).map((r) => ({ id: r.id, type: r.type, date: r.date, accountId: r.accountId, categoryId: r.categoryId, amount: parseFloat(r.amount) || 0, description: r.description || "", isReconciliation: String(r.isReconciliation).toUpperCase() === "TRUE", bucket: r.bucket || "personal", transferId: r.transferId ? String(r.transferId) : "", ref: r.ref ? String(r.ref) : "", panel: r.panel ? String(r.panel) : "", credits: Number(r.credits) > 0 ? Number(r.credits) : 0 }));
   const budgets = raw.Budgets.filter((r) => r.id).map((r) => ({ id: r.id, categoryId: r.categoryId, month: r.month, amount: parseFloat(r.amount) || 0 }));
   const reconciliations = raw.Reconciliations.filter((r) => r.id).map((r) => ({ id: r.id, accountId: r.accountId, date: r.date, actualBalance: parseFloat(r.actualBalance) || 0, computedBefore: parseFloat(r.computedBefore) || 0, diff: parseFloat(r.diff) || 0 }));
-  const settingsRow = raw.Settings.find((r) => r.key === "currency");
-  return { categories, accounts, transactions, budgets, reconciliations, settings: { currency: settingsRow ? settingsRow.value : "PKR" } };
+  return { categories, accounts, transactions, budgets, reconciliations,
+    settings: { currency: settingsCurrency, rates: settingsRates, displayCurrencies: settingsDisplay } };
 }
 
 function buildRowsForTab(tab) {
   const cols = SHEET_TABS[tab];
-  if (tab === "Settings") return [cols, ["currency", db.settings.currency]];
+  /* Several key/value rows now, not just currency (Section 3.15). Rates go as JSON in one cell so
+     adding a currency never needs another sheet column. */
+  if (tab === "Settings") return [cols,
+    ["currency", db.settings.currency || "PKR"],
+    ["rates", JSON.stringify(db.settings.rates || {})],
+    ["displayCurrencies", (db.settings.displayCurrencies || []).join(",")],
+  ];
   const key = tab.toLowerCase();
   const items = db[key] || [];
   return [cols, ...items.map((item) => cols.map((c) => (item[c] !== undefined && item[c] !== null ? item[c] : "")))];
@@ -2549,6 +2794,7 @@ document.getElementById("syncNowBtn").addEventListener("click", async () => {
   cloudBusy = true; updateSyncUI();
   try {
     const sheetData = coerceTypesFromSheet(await readAllFromSheet());
+    ensureCurrencies(sheetData);
     seedBusinessCategories(sheetData);
     repairOrphanedParents(sheetData);
     repairReconciliationBuckets(sheetData);

@@ -94,8 +94,13 @@ Two things about the move that were verified rather than assumed:
 
 ### 2.6 Settings
 ```
-{ currency: "PKR" | "USD" | "EUR" | "GBP" | "INR" | "AED" }
+{ currency: <main currency code>, rates: { [code]: <PKR per 1 unit> }, displayCurrencies: [code, …] }
 ```
+- `currency` — the **main currency**: the one every cross-account total is expressed in. Not a per-item label (Section 3.15).
+- `rates` — manually maintained, always **"how many PKR is 1 unit of this currency"**. PKR is fixed at 1 and never stored. Anchoring to PKR rather than to the main currency keeps the meaning unambiguous even after the main currency changes.
+- `displayCurrencies` — which currencies the "also worth" conversion lines show.
+
+Supported codes: `PKR, USD, AED, SAR, QAR, GBP, EUR, INR`.
 
 ---
 
@@ -400,6 +405,43 @@ Mechanically it reuses Section 3.10 exactly — one shared `transferId`, both ha
 
 `Mark as Transfer` (3.10) also accepts cross-ledger pairs, so movements already entered by hand can be corrected retroactively.
 
+### 3.15 Multi-currency — currency belongs to the account
+
+**The problem.** The user plans to move abroad (Dubai, Saudi, possibly UK) and wants to keep using this app for life. Before this change the app had **one global currency setting used only to choose a symbol**: every amount was a bare number with no currency attached. Switching the setting from PKR to AED would have relabelled Rs 194,553 as "AED 194,553" and then **added rupees to dirhams** in every total — a silently wrong figure, which is worse than an obvious error because it looks authoritative.
+
+**The model: currency lives on the account.** You never spend dirhams out of a rupee account, so a transaction inherits its currency from its account and needs no currency of its own. Moving abroad means **adding an AED account**, not changing a setting. All Pakistani history stays in rupees, permanently.
+
+```
+accountCurrency(accountId) = account.currency, defaulting to the main currency
+Per-account balances (3.1) are ALREADY correct — each works on one account, so one currency.
+Only CROSS-account sums need conversion.
+```
+
+**Conversion.**
+```
+rates[code]           = how many PKR 1 unit of that currency is worth   (PKR ≡ 1)
+convertAmount(a,f,t)  = a × rates[f] / rates[t]      null if either rate is missing
+txAmountInMain(t)     = convertAmount(t.amount, accountCurrency(t.accountId), mainCurrency)
+```
+Rates are **entered manually**, with an optional "get latest" button. Deliberately not fetched automatically: the app otherwise talks to nobody but Google, an outside rate service could change or disappear, and it would break offline use. A manually-set rate is ample for "roughly how much do I have in dollars".
+
+**A missing rate is never guessed.** `convertAmount` returns `null`, the amount is **excluded** from the total, and a visible warning names the currency. Treating an unknown rate as 1:1 would produce a confident, badly wrong number — the exact failure this whole section exists to prevent.
+
+**What changed, and what deliberately did not:**
+
+| Unchanged | Converted to main currency |
+|---|---|
+| `accountNet`, `accountCurrentBalance`, `accountBalanceAsOf`, `accountBalanceBefore` — each is single-account, so already single-currency | `totalNetWorth`, Dashboard Income/Expenses/Net/Savings Rate, both budget functions, the donut, both bar charts, Business tab totals, all Yearly Report totals, deal profit, credit costing, outstanding loans |
+| Account list, accounts overview, carry-forward table, Yearly Report account summary, transaction rows — all display in **their own account's currency** | |
+
+`fmtMoney(n, code)` gained an optional currency argument defaulting to the main currency, so all 54 existing call sites kept working unchanged; only the per-account displays were switched to pass an explicit code.
+
+**Cross-currency transfers (3.10, 3.14).** When the two accounts share a currency the form is unchanged — one amount. When they differ, a **second amount box** appears: what left, and what actually arrived. The user types the received figure from their bank, because a bank's real rate and fees never match a published rate; the saved rate only pre-fills it as a suggestion. The two halves therefore hold **different amounts**, which is why `Mark as Transfer` no longer requires equal amounts when the accounts' currencies differ. No fee transaction is derived — whether the spread is a "loss" depends on which rate you consider true, so that judgement is left to the user.
+
+**Conversion display.** The Accounts and Dashboard tabs show the main-currency total with an "also worth" line in the user's chosen currencies. Business figures get the same treatment and remain entirely separate from personal, as always.
+
+**Migration.** Every existing account is set to PKR, so on the day of release **every figure must be byte-identical to before**. That equality is the release test (8.26) and is only available while all data is single-currency — which is precisely why this was done before the user moves abroad.
+
 ---
 
 ## 4. Business Rules / Invariants (must hold at all times)
@@ -422,11 +464,11 @@ Your Google Sheet has one tab per entity. The exact columns, in order, that get 
 | Sheet tab | Columns |
 |---|---|
 | `Categories` | `id, name, type, color, parentId, order, bucket, excludeFromTotals` |
-| `Accounts` | `id, name, type, openingBalance, openingDate, color, bucket, excludeFromBalance` |
+| `Accounts` | `id, name, type, openingBalance, openingDate, color, bucket, excludeFromBalance, currency` |
 | `Transactions` | `id, type, date, accountId, categoryId, amount, description, isReconciliation, bucket, transferId, ref, panel, credits` |
 | `Budgets` | `id, categoryId, month, amount` |
 | `Reconciliations` | `id, accountId, date, actualBalance, computedBefore, diff` |
-| `Settings` | `key, value` |
+| `Settings` | `key, value` — now **multiple rows**: `currency`, `rates` (JSON), `displayCurrencies` (comma-separated). Previously only a single `currency` row was written or read. |
 
 How it works:
 - **Writing** (`buildRowsForTab`) is fully generic — it writes whatever columns are listed in `SHEET_TABS` for that tab, reading each column name directly off the in-memory object. Adding a column to `SHEET_TABS` is enough to make it get written.
@@ -487,6 +529,18 @@ When a new field is added to categories, accounts, or transactions (like `parent
 **8.15 Net This Month stat** — add income and expense transactions in the same month, confirm "Net This Month" equals Income − Expense exactly; switch months and confirm it recalculates per month; confirm the Business tab's 4-card stat grid is unaffected (still `repeat(4, 1fr)` on desktop) and its "Net Profit" figure is untouched.
 
 **8.16 Total Balance moved to Accounts** — confirm the Dashboard has exactly 4 stat cards (Income, Expenses, Net This Month, Savings Rate) and no Total Balance card anywhere on it; confirm the Accounts tab's "Your Accounts" card shows "Total Balance (Personal)" matching the sum of personal accounts' `accountCurrentBalance`, and that it excludes any business accounts even though the account list below it shows both; confirm switching Dashboard months does not affect the Accounts tab figure at all (it's not month-scoped); confirm the Business tab's "Total Business Balance" is untouched.
+
+**8.26 Multi-currency (Section 3.15)** — the release test is *equality*, and it is only possible while all data is still single-currency. Run it first and treat any difference as a failure:
+- **With every account set to PKR, confirm every figure on every tab is byte-identical to before the change** — Dashboard, Accounts (incl. Total Balance and carry-forward), Transactions, Budgets, Yearly Report (both ledgers), Business (incl. deals and credit stock). Not one number may move.
+- **Backward compatibility**: feed `coerceTypesFromSheet` an Accounts sheet with the **old 8-column header** (no `currency`) and confirm every account loads intact with currency defaulting to the main currency. Feed a Settings sheet containing **only the old single `currency` row** and confirm it still loads, with rates empty and no crash.
+- **Round-trip (8.7)** for `Accounts.currency` and for all three Settings rows, including rates surviving as numbers through JSON.
+- Add an AED account and confirm: its own balance shows in **AED**; its transactions show in AED in the list; but Dashboard Income/Expenses and Total Balance convert it into PKR at the saved rate.
+- **Missing rate**: add an account in a currency with no rate set, give it a transaction, and confirm the amount is **excluded** from totals and a warning naming that currency is shown — never silently counted as 1:1.
+- Confirm per-account balances, the carry-forward table and Reconcile are unaffected by any rate change (they must never convert).
+- Change a rate and confirm only the converted totals move, never a per-account balance.
+- **Cross-currency transfer**: PKR → AED with different sent/received amounts; confirm each account moves by its own amount, that both halves share one `transferId`, that deleting either removes both and restores both balances, and that no income/expense figure moves.
+- Confirm the transfer form shows **one** amount box for same-currency accounts and **two** when they differ, and that `Mark as Transfer` accepts unequal amounts only when the currencies differ.
+- Confirm the "also worth" lines on Dashboard and Accounts match `total × rate`, and that Business conversions stay separate from personal.
 
 **8.25 Business ↔ Personal transfers (Section 3.14)** — the risk is leaking a figure across the ledger boundary, so test both sides' totals explicitly:
 - Move an amount from a business account to a personal one. Confirm the business account's balance falls by exactly that amount and the personal account's rises by exactly that amount.
@@ -702,6 +756,17 @@ This mobile layout work applies to the **Cloud** copy first, since that's the on
 - **Action required**: on the live site, select the existing Rs 20,000 pair (the UBL "Cash Withdrawal" expense and the Cash "Cash Deposite" income, both dated 2026-08-02) and use **Mark as Transfer** — August's Income should drop from Rs 214,553 to Rs 194,553, Expenses by Rs 20,000, and Savings Rate rise to about 53.2%, with both account balances unchanged.
 - **2026-07-30 (hosting moved from Netlify to GitHub Pages)** — The Cloud copy is now live at **<https://mudassar-shah.github.io/money-manager-cloud/>**, served by GitHub Pages from the `mudassar-shah/money-manager-cloud` repository (branch `main`). Netlify is no longer used: its free plan meters "credits" against deploy activity, and iterating on the app in a single day could consume a large share of the monthly allowance, while GitHub Pages has no equivalent limit for a static site. The old `peppy-lily-416823.netlify.app` URL is abandoned. Deployment is now "upload/push to the repo and it publishes itself" instead of a manual folder-drag — which also removes the recurring partial-upload hazard noted in the session backup, where Netlify Drop once uploaded only the dragged file and left `manifest.json`, `sw.js` and the three icons 404ing on the live site.
   Section 1.1 added to record the URL, the hosting mechanism and two things that were checked rather than assumed: (a) GitHub Pages serves from a **subpath** (`/money-manager-cloud/`) rather than a domain root, and every asset reference in the app is already relative (`manifest.json`, `apple-touch-icon.png`, `register("sw.js")`, the manifest's `./` start_url/scope/icons, and `sw.js`'s `./` SHELL_FILES), so the PWA, install prompt, icons and offline caching all work unchanged — these must never be converted to absolute `/…` paths, which would break on a subpath while looking correct on a root domain; and (b) Cloud Sync requires `https://mudassar-shah.github.io` to be added to the OAuth 2.0 Client ID's **Authorized JavaScript origins** in Google Cloud Console, since sign-in uses `google.accounts.oauth2.initTokenClient` which validates the page origin — without it, "Sign in with Google" fails on an origin mismatch. **No application code was changed for this migration.** Also corrected the Section 1 table, which still listed the three copies under stale `E:\Claude\…` paths; they are and have been under `D:\`. Change Log entries dated before 2026-07-30 refer to Netlify redeploys as accurate history, not live instructions.
+- **2026-08-09 (multi-currency — currency belongs to the account)** — The user plans to move to Dubai or Saudi (possibly the UK later) and wants to keep using this app for life. Before this, one global setting chose a symbol and nothing more, so switching it would have relabelled rupees as dirhams **and added the two together** in every total. Implemented Section 3.15: currency on the **account**, conversion only where sums span accounts.
+  - **Measured before building**, at the user's request: **54** display points and **22** cross-account sums across **15** functions. The four per-account balance functions needed no change — each already works on one account, so one currency.
+  - `fmtMoney(n, code)` gained an optional currency defaulting to the main one, so all 54 existing call sites kept working untouched; only the 6 per-account displays were switched to pass an explicit code. 18 sums were converted via `txAmountInMain`; the 4 per-account inflow/outflow sums were **deliberately left alone** and verified still reading `t.amount`.
+  - **A missing rate is never guessed.** `convertAmount` returns null, the amount is excluded, and a warning names the currency — chosen over a 1:1 fallback, which would hand the user a confident wrong number.
+  - Rates are manual (anchored as "PKR per 1 unit", so they stay unambiguous if the main currency changes), with a **user-initiated** "get latest" button. Never automatic: the app otherwise talks to nobody but Google, and a failed fetch leaves typed rates untouched.
+  - Cross-currency transfers gained a second amount box, shown only when the two accounts' currencies differ, pre-filled from the rate but overridden by what the bank actually delivered. `Mark as Transfer` now only requires equal amounts when the currencies match.
+  - **The release test was equality, and it passed with zero differences.** The pre-change `index.html` was extracted from commit `0c7f158`, the identical dataset run through both, and every rendered figure deep-compared across Dashboard, Accounts (total, list, carry-forward, outstanding), Transactions, Budgets, both Yearly Report ledgers and the Business tab including deals and credit stock: **0 differences**. That test is only possible while all data is single-currency, which is exactly why this was done before the user moves.
+  - Multi-currency behaviour verified: with no AED rate the AED money is excluded and warned; with a rate, Total Balance becomes 150,000 + 15,000×76 and Dashboard Income 100,000 + 5,000×76, while the AED account still shows **AED 15,000** and UBL **Rs 150,000**; changing a rate moves only converted totals, never a per-account balance; a PKR→AED transfer took 76,000 out and put 990 in with one shared `transferId` and no income/expense movement; deleting either half restored both. Sync verified against the user's **current sheet shape** — Accounts without `currency` and a Settings tab holding only the single old `currency` row — everything intact and every account defaulting to PKR; round-trip preserves currency, rates as numbers and display currencies; a corrupt rates cell and negative/zero rates are rejected without crashing.
+  - Two console `ReferenceError`s appeared mid-build and were investigated rather than dismissed; both came from the preview auto-reloading between a call being added and its function being added. Proven stale by confirming every function is defined, `loadData()` runs with all accounts stamped, and all seven views render cleanly.
+  - **Not yet mirrored** into the PC and iPhone copies — see the Action required note below.
+- **Action required**: the PC (`index.html`/`app.js`) and iPhone copies are **behind** on the multi-currency change. They remain fully working on their own data, but no longer match the Cloud copy, so Section 1's "identical logic" rule is temporarily broken. Mirror before making further shared-logic changes.
 - **2026-08-09 (Business ↔ Personal transfers)** — The user takes money out of the business, puts money in, and — the case they emphasised — **borrows** from the business and repays later. Cross-ledger movement had been proposed on 2026-08-01 and explicitly declined at the time; the need became real, so it was revisited (Section 3.14).
   - **Treated as a pure transfer on both sides**: both halves excluded from every income/expense figure in both ledgers, both balances updating in full. The "count the personal side as income" model was reconsidered and rejected *with* the user — defensible for a permanent owner's draw, wrong for borrowing, which dominates here. The user keeps control per movement: use the form and it doesn't touch income/expense; enter two ordinary transactions instead and it counts normally. Trade-off stated to them: permanently drawing profit via this form flatters Savings Rate.
   - **A separate form on the Accounts tab, at the user's explicit request.** They asked that the everyday Transactions-tab transfer form be left exactly as it is — it is used constantly for same-ledger moves, while cross-ledger is "once in a blue moon", and merging them would have meant changing a daily-use form to serve a rare case. The two are now mirror images: each refuses the other's job and points the user to the right place. The everyday form was verified untouched, still listing only the active ledger's accounts.

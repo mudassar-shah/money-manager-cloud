@@ -376,6 +376,61 @@ If you take profit out of the business permanently and always record it as a tra
 
 ---
 
+## 9e. Working in More Than One Currency
+
+If you move abroad, your salary and spending will be in another currency. Here's how that works.
+
+### The rule: currency belongs to the account, not the app
+
+When you move to Dubai you **don't change any setting**. You just **add a new account** and set its currency to AED.
+
+- Your UBL account stays in **PKR**, and all your Pakistani history stays in rupees — permanently
+- Your new Dubai account is in **AED**, and everything in it is dirhams
+
+You never spend dirhams from a rupee account, so each account simply knows its own currency.
+
+### Adding an account
+
+There's now a **Currency** box on the Add Account form. Existing accounts were all set to PKR, so nothing about your current data changed.
+
+### Seeing your money in other currencies
+
+On the **Accounts** tab there's a section called **Currencies & Exchange Rates**:
+
+1. **Main currency** — which currency your totals are shown in. Yours is PKR. Change it to AED when you move.
+2. **Also show totals in** — tick USD, AED, SAR, whichever you care about
+3. **Rates** — type how many PKR one unit is worth (1 USD = 279, 1 AED = 76). Or press **Get latest rates** to fill them in, then check and Save.
+
+Your Total Balance then shows like this:
+
+> **Total Balance (Personal): Rs 225,878.00**
+> All time · ≈ $ 809.60 · AED 2,972.08
+
+The same appears on the Business tab for your business total.
+
+### Transferring between different currencies
+
+If you send money from your Dubai account to UBL, the two amounts aren't the same. So a **second box appears**:
+
+```
+Amount sent (AED):      1,000
+Amount received (PKR):  75,600
+```
+
+The app suggests a figure from your saved rate, but **you should type what your bank actually delivered** — banks always take a margin. Both accounts then move by their own real amount.
+
+For two accounts in the *same* currency, nothing changes — still one amount box.
+
+### If you forget to set a rate
+
+The app will **not** guess. Money in that currency is left **out** of your totals and you'll see a clear warning telling you which rate is missing. That's deliberate — a total that quietly treats 1 dirham as 1 rupee would be badly wrong and you'd have no way to tell.
+
+### What rates never affect
+
+Rates only combine currencies for totals. They **never** touch an individual account's balance, the carry-forward table, or Reconcile. Your Dubai account always shows its true dirham balance no matter what rate you set.
+
+---
+
 ## 10. Backup and Restore
 
 At the bottom of the sidebar:
