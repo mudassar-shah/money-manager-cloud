@@ -105,6 +105,7 @@ Two things about the move that were verified rather than assumed:
 - `displayCurrencies` — which currencies the "also worth" conversion lines show.
 
 Supported codes: `PKR, USD, AED, SAR, QAR, GBP, EUR, INR`.
+- `pinHash`, `pinSalt` — the app lock (Section 3.16). Absent means no lock. The PIN itself is **never stored**.
 
 ---
 
@@ -462,6 +463,36 @@ The purpose the user stated is planning a move: *"what amount of USD does my fam
 
 **Migration.** Every existing account is set to PKR, so on the day of release **every figure must be byte-identical to before**. That equality is the release test (8.26) and is only available while all data is single-currency — which is precisely why this was done before the user moves abroad.
 
+### 3.16 App lock (PIN)
+
+**What this is, and what it is not.** A **privacy deterrent**, not security. It stops someone who picks up an unlocked phone from reading the owner's finances. It does **not** stop anyone technical: the check runs in the browser, so it can be bypassed by viewing source, using developer tools, or reading `localStorage` directly — and the data also lives in the user's Google Sheet regardless. This was stated plainly to the user before building; they wanted it for the casual-glance case, which it genuinely solves.
+
+The real protections remain **Google Sign-In** (only their account reaches the Sheet) and **the device's own lock screen**.
+
+```
+pinSalt  = 16 random bytes, hex
+pinHash  = SHA-256(pinSalt + ":" + pin), hex        via crypto.subtle where available
+```
+**The PIN is never stored, in any form that can be read back.** Storing it plainly would mean anyone glancing at the Google Sheet could read it — which would defeat the one thing the lock is for. Salted so that two people choosing the same PIN produce different hashes.
+
+**Fallback when `crypto.subtle` is unavailable** (it requires a secure context; the standalone PC/iPhone copies may run from `file://`): a small deterministic string hash is used instead, marked by a `plain$` prefix on the stored hash so the two schemes can never be confused. It is weaker, but the threat model is a casual glance, and the alternative — refusing to lock at all on those copies — serves the user worse.
+
+**Behaviour**
+- Locks on **every page load** when a PIN is set, and again after **10 minutes** hidden (`visibilitychange`), which covers switching apps and coming back.
+- **Nothing is rendered at all while locked.** The first version showed the overlay before `renderAll()`, which meant figures existed in the page underneath an opaque overlay — not readable, but the documentation claimed they were never drawn. `renderAll()` is now skipped entirely while locked (`if (!lockedNow) renderAll()`), and `tryUnlock()` runs it after the PIN is accepted. Verified: **0** money figures in the page while locked, 13 after unlocking.
+- Digits only, 4–8 of them — chosen by the user over letters/symbols so the phone shows a number pad.
+- Wrong attempts are counted and shown; there is deliberately **no lockout**, since locking the owner out of their own money data would be worse than the attack it prevents.
+
+**Set up, change and remove** all live in the Cloud Sync tab's App Lock card, each requiring the current PIN except the initial set.
+
+**Forgotten PIN — recovery by design, and the trap in the obvious version.** The intended route is: delete the `pinHash` row from the **Settings** tab of the Google Sheet, then reload. This is gated by Google Sign-In, so only the owner can do it — the escape hatch is protected by the thing that is actually secure.
+
+**But "delete the row and reload" alone does not work**, and that was nearly shipped. A reload reads `localStorage`, not the Sheet, so the device would still be locked — and the user could not reach the Sync button to pull the corrected copy, because the lock screen is in the way. The lock screen therefore carries a **"Forgot your PIN?"** button that clears this device's local copy and reloads, after which the app signs in and pulls a fresh copy from the Sheet with no PIN in it.
+
+It asks twice and states plainly that anything never synced to the Sheet will be lost, because it genuinely will be. On the non-syncing PC/iPhone copies the equivalent is Reset All Data or clearing site data.
+
+**Synced, so one PIN covers every device** — set on the PC, applies on the phone. It rides on the Settings key/value rows added in Section 3.15; no new sheet columns.
+
 ---
 
 ## 4. Business Rules / Invariants (must hold at all times)
@@ -549,6 +580,18 @@ When a new field is added to categories, accounts, or transactions (like `parent
 **8.15 Net This Month stat** — add income and expense transactions in the same month, confirm "Net This Month" equals Income − Expense exactly; switch months and confirm it recalculates per month; confirm the Business tab's 4-card stat grid is unaffected (still `repeat(4, 1fr)` on desktop) and its "Net Profit" figure is untouched.
 
 **8.16 Total Balance moved to Accounts** — confirm the Dashboard has exactly 4 stat cards (Income, Expenses, Net This Month, Savings Rate) and no Total Balance card anywhere on it; confirm the Accounts tab's "Your Accounts" card shows "Total Balance (Personal)" matching the sum of personal accounts' `accountCurrentBalance`, and that it excludes any business accounts even though the account list below it shows both; confirm switching Dashboard months does not affect the Accounts tab figure at all (it's not month-scoped); confirm the Business tab's "Total Business Balance" is untouched.
+
+**8.27 App lock (Section 3.16)** — the failure that matters most is locking the owner out of their own data, so test recovery before anything else:
+- **Recovery first**: set a PIN, then delete the `pinHash` row from the Settings sheet (or the equivalent local value), reload, and confirm the app opens unlocked and a new PIN can be set. This must always work.
+- Confirm the PIN is **not** recoverable from storage: inspect `localStorage` and the Settings rows and confirm the digits appear nowhere, only a salt and a hash.
+- Confirm two different PINs give different hashes, and that the **same PIN on two devices with different salts** also gives different hashes.
+- Confirm a correct PIN unlocks and a wrong one does not, that the attempt counter increments, and that there is **no lockout** after repeated failures.
+- Confirm the overlay is present **before** any figure renders — no balance may be visible behind or before it.
+- Confirm it re-locks after 10 minutes hidden, and that returning within 10 minutes does not re-prompt.
+- Confirm changing the PIN requires the current one, and that removing the lock does too.
+- Confirm a device with **no** PIN set is never prompted, and that setting one on device A and syncing makes device B prompt.
+- **Round-trip (8.7)**: confirm `pinHash`/`pinSalt` survive a sync unchanged, and that a Settings sheet without them simply means "no lock" rather than erroring.
+- Confirm the fallback hash path (no `crypto.subtle`) still locks and unlocks, and that a hash written by one scheme is never accepted by the other.
 
 **8.26 Multi-currency (Section 3.15)** — the release test is *equality*, and it is only possible while all data is still single-currency. Run it first and treat any difference as a failure:
 - **With every account set to PKR, confirm every figure on every tab is byte-identical to before the change** — Dashboard, Accounts (incl. Total Balance and carry-forward), Transactions, Budgets, Yearly Report (both ledgers), Business (incl. deals and credit stock). Not one number may move.
@@ -786,7 +829,11 @@ This mobile layout work applies to the **Cloud** copy first, since that's the on
   - Multi-currency behaviour verified: with no AED rate the AED money is excluded and warned; with a rate, Total Balance becomes 150,000 + 15,000×76 and Dashboard Income 100,000 + 5,000×76, while the AED account still shows **AED 15,000** and UBL **Rs 150,000**; changing a rate moves only converted totals, never a per-account balance; a PKR→AED transfer took 76,000 out and put 990 in with one shared `transferId` and no income/expense movement; deleting either half restored both. Sync verified against the user's **current sheet shape** — Accounts without `currency` and a Settings tab holding only the single old `currency` row — everything intact and every account defaulting to PKR; round-trip preserves currency, rates as numbers and display currencies; a corrupt rates cell and negative/zero rates are rejected without crashing.
   - Two console `ReferenceError`s appeared mid-build and were investigated rather than dismissed; both came from the preview auto-reloading between a call being added and its function being added. Proven stale by confirming every function is defined, `loadData()` runs with all accounts stamped, and all seven views render cleanly.
   - **Not yet mirrored** into the PC and iPhone copies — see the Action required note below.
-- **Action required**: the PC (`index.html`/`app.js`) and iPhone copies are **behind** on the multi-currency change. They remain fully working on their own data, but no longer match the Cloud copy, so Section 1's "identical logic" rule is temporarily broken. Mirror before making further shared-logic changes.
+- **2026-08-09 (PC and iPhone copies brought back in line)** — The three copies had diverged: the PC and iPhone versions were missing multi-currency entirely, plus the currency table and the Categories search. Section 1's "identical logic" rule was restored.
+  - Established first that the iPhone copy is exactly **"Cloud minus Cloud Sync"** — of Cloud's 125 top-level functions it had 103, with **zero functions Cloud lacks**. The 22 missing split cleanly into 8 Cloud-Sync-only (which must *not* be copied) and 14 multi-currency (which must be). That made a block-splice mirror safe rather than guesswork.
+  - Mirrored by extracting verbatim blocks from Cloud — the multi-currency helpers, the transfer-currency UI, the currency settings UI, `ensureCurrencies`, and the five markup cards — so the shared logic is byte-identical rather than retyped.
+  - **A real bug was caught by marker reconciliation**: a blanket sum conversion had also converted the four *per-account* inflow/outflow sums, which must stay in the account's own currency. Reverted and verified against Cloud (21 occurrences, same 12 functions, 4 per-account sums preserved). A second gap — the copies never cleared the received-amount box after a transfer, so the next one wouldn't re-suggest — was found the same way and fixed.
+  - Verified by **running the iPhone copy**, which also validates `app.js` since both received identical JavaScript: with all accounts PKR it reproduces Cloud's figures exactly (Income Rs 194,553, Expenses Rs 24,684, Total Balance Rs 225,878, Business Income Rs 52,000); an unrated AED account is excluded and warned while keeping its own AED 15,000 balance; with a rate the total becomes 150,000 + 15,000×76 and Dashboard Income 100,000 + 5,000×76; a PKR→AED transfer moves 76,000 out and 990 in with different amounts and no income/expense movement, and the received box clears afterwards; the Categories search shows a matching child with its parent dimmed for context and Clear restores the full list. Markup integrity confirmed by balanced tag counts, and every marker now reconciles as `cloud = app.js + index.html` and `iphone = cloud`, with the only differences being the two Cloud-only sync calls.
 - **2026-08-09 (Business ↔ Personal transfers)** — The user takes money out of the business, puts money in, and — the case they emphasised — **borrows** from the business and repays later. Cross-ledger movement had been proposed on 2026-08-01 and explicitly declined at the time; the need became real, so it was revisited (Section 3.14).
   - **Treated as a pure transfer on both sides**: both halves excluded from every income/expense figure in both ledgers, both balances updating in full. The "count the personal side as income" model was reconsidered and rejected *with* the user — defensible for a permanent owner's draw, wrong for borrowing, which dominates here. The user keeps control per movement: use the form and it doesn't touch income/expense; enter two ordinary transactions instead and it counts normally. Trade-off stated to them: permanently drawing profit via this form flatters Savings Rate.
   - **A separate form on the Accounts tab, at the user's explicit request.** They asked that the everyday Transactions-tab transfer form be left exactly as it is — it is used constantly for same-ledger moves, while cross-ledger is "once in a blue moon", and merging them would have meant changing a daily-use form to serve a rare case. The two are now mirror images: each refuses the other's job and points the user to the right place. The everyday form was verified untouched, still listing only the active ledger's accounts.

@@ -431,6 +431,53 @@ Rates only combine currencies for totals. They **never** touch an individual acc
 
 ---
 
+## 9f. App Lock (PIN)
+
+You can make the app ask for a PIN before it opens.
+
+### Turning it on
+
+1. Go to the **Cloud Sync** tab
+2. Find the **App Lock** card
+3. Enter a PIN (4–8 digits), type it again to confirm, and press **Turn On App Lock**
+
+That's it. Because it syncs through your Google Sheet, **you only set it once** — your phone will ask for the same PIN.
+
+### What happens then
+
+- The app asks for your PIN **every time it opens**
+- It asks again if you've been away from it for **more than 10 minutes**
+- Nothing at all is shown until you enter it — no balances, no transactions
+
+### Changing or removing it
+
+Same card. Enter your current PIN, then either type a new one and press **Change PIN**, or press **Remove Lock**.
+
+### If you forget your PIN
+
+You can always get back in. Two steps, in this order:
+
+1. **Open your Google Sheet**, go to the **Settings** tab, and delete the row whose first cell says `pinHash`
+2. **Back in the app**, press **"Forgot your PIN?"** on the lock screen and confirm
+
+The app clears its local copy, reloads, and pulls your data back from the Sheet — with no PIN. You then set a new one.
+
+⚠️ **Do step 1 first.** If you skip it, the PIN just comes back when the app re-syncs. And anything on that device that was never synced to your Sheet will be lost, so if you're unsure, sync from another device first.
+
+This works because only *your* Google account can open that Sheet — so only you can unlock yourself.
+
+### Be clear about what this does and doesn't do
+
+**It does:** stop someone who picks up your unlocked phone from reading your finances. That's a real, everyday thing and it genuinely prevents it.
+
+**It does not:** stop anyone who knows what they're doing. The check happens inside the browser, so a technical person could get around it, and your data also sits in your Google Sheet regardless.
+
+Your real protection remains your **Google sign-in** and your **phone's own lock screen**. Think of this as a curtain, not a safe.
+
+Your PIN itself is never stored anywhere — only a scrambled version that can't be turned back into your digits.
+
+---
+
 ## 10. Backup and Restore
 
 At the bottom of the sidebar:

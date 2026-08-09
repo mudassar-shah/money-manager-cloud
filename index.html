@@ -127,6 +127,16 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
 .tx-filters input, .tx-filters select { padding: 8px 10px; }
 .cat-search { font-weight: 400; }
 .cat-hint { font-size: 11px; font-weight: 400; color: var(--text-muted); }
+/* App Lock overlay — covers everything, including the sidebar and top bar (Section 3.16). */
+.lock-screen { position: fixed; inset: 0; z-index: 9999; background: var(--sidebar-bg); display: flex; align-items: center; justify-content: center; padding: 20px; }
+.lock-box { background: var(--surface); border-radius: var(--radius); padding: 28px 24px; width: 100%; max-width: 340px; text-align: center; box-shadow: 0 10px 40px rgba(0,0,0,.35); }
+.lock-mark { width: 46px; height: 46px; margin: 0 auto 14px; border-radius: 12px; background: var(--accent); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 20px; }
+.lock-box h2 { margin: 0 0 4px; font-size: 17px; }
+.lock-sub { margin: 0 0 16px; font-size: 13px; color: var(--text-muted); }
+.lock-box input { width: 100%; text-align: center; font-size: 22px; letter-spacing: .3em; padding: 12px; margin-bottom: 12px; }
+.lock-box .primary-btn { width: 100%; }
+.lock-msg { min-height: 18px; margin-top: 10px; font-size: 13px; color: var(--expense); font-weight: 600; }
+.lock-help { margin-top: 14px; font-size: 11px; color: var(--text-muted); line-height: 1.5; }
 /* Conversion table: readable at a glance, not squeezed into a hint line. */
 .currency-table td, .currency-table th { font-size: 15px; padding: 10px 12px; }
 .currency-table td:first-child { font-weight: 700; }
@@ -209,6 +219,21 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
 </style>
 </head>
 <body>
+
+<!-- App Lock overlay (Section 3.16). Rendered first and shown before any view draws, so no balance
+     can flash on screen behind it. Hidden by default; shown only when a PIN is set. -->
+<div id="lockScreen" class="lock-screen" style="display:none;">
+  <div class="lock-box">
+    <div class="lock-mark">₨</div>
+    <h2>Money Manager</h2>
+    <p class="lock-sub">Enter your PIN to continue</p>
+    <input type="password" id="lockPin" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="current-password" placeholder="••••" autofocus>
+    <button type="button" id="lockUnlockBtn" class="primary-btn">Unlock</button>
+    <div id="lockMsg" class="lock-msg"></div>
+    <button type="button" id="lockForgotBtn" class="ghost-btn small" style="width:100%;margin-top:10px;background:transparent;color:var(--text-muted);border-color:var(--border);">Forgot your PIN?</button>
+    <div class="lock-help">Recovery: delete the <code>pinHash</code> row from the Settings tab of your Google Sheet first, then press the button above.</div>
+  </div>
+</div>
 
 <div class="mobile-topbar">
   <button class="mobile-menu-btn" onclick="toggleMobileMenu()" aria-label="Menu">☰</button>
@@ -877,6 +902,37 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
         <h1>Cloud Sync</h1>
       </header>
 
+      <div class="card">
+        <h2>App Lock</h2>
+        <p class="hint">Ask for a PIN before the app opens. This stops someone casually picking up your phone and reading your finances — it is <strong>not</strong> full security, because anyone technical could get past it, and your data also lives in your Google Sheet. Your real protection is your Google sign-in and your device's own lock.</p>
+        <div id="lockOffBlock">
+          <div class="form-row">
+            <label>New PIN (4–8 digits)
+              <input type="password" id="pinNew" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="new-password" placeholder="••••">
+            </label>
+            <label>Confirm PIN
+              <input type="password" id="pinNew2" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="new-password" placeholder="••••">
+            </label>
+            <button type="button" id="pinSetBtn" class="primary-btn">Turn On App Lock</button>
+          </div>
+        </div>
+        <div id="lockOnBlock" style="display:none;">
+          <p class="hint" style="color:var(--income);font-weight:600;">App Lock is ON. It asks for your PIN when the app opens, and again after 10 minutes away.</p>
+          <div class="form-row">
+            <label>Current PIN
+              <input type="password" id="pinCurrent" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="current-password" placeholder="••••">
+            </label>
+            <label>New PIN (leave blank to just remove)
+              <input type="password" id="pinChange" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="new-password" placeholder="••••">
+            </label>
+            <button type="button" id="pinChangeBtn" class="primary-btn">Change PIN</button>
+            <button type="button" id="pinRemoveBtn" class="ghost-btn danger small">Remove Lock</button>
+          </div>
+        </div>
+        <div id="pinStatus" class="cat-hint" style="margin-top:6px;"></div>
+        <p class="hint" style="margin:12px 0 0;"><strong>If you forget your PIN:</strong> open your Google Sheet, go to the <strong>Settings</strong> tab, delete the row whose first cell says <code>pinHash</code>, then reload the app. It will open unlocked and you can set a new PIN. Only you can do this, because only your Google account can open that Sheet — so you can never be locked out of your own data.</p>
+      </div>
+
       <div id="cloudSetupCard" class="card">
         <h2>Connect Google Sheets</h2>
         <p class="setup-steps">Paste your Google Client ID and your Google Sheet ID below. Once saved, use the "Sign in with Google" button to connect — only your own Gmail account (the one you added as a test user) will be able to grant access.</p>
@@ -1097,6 +1153,147 @@ function saveData() {
   scheduleCloudPush();
 }
 function saveLocalOnly() { localStorage.setItem(STORAGE_KEY, JSON.stringify(db)); }
+
+/* ===== App Lock (Section 3.16) =====
+   A privacy deterrent, not security: the check runs in the browser, so anyone technical can bypass
+   it, and the data also lives in the user's Google Sheet. It solves the case it was asked for —
+   someone picking up an unlocked phone. The PIN is never stored in a readable form. */
+function randomSaltHex() {
+  const a = new Uint8Array(16);
+  if (window.crypto && crypto.getRandomValues) crypto.getRandomValues(a);
+  else for (let i = 0; i < a.length; i++) a[i] = Math.floor(Math.random() * 256);
+  return Array.from(a).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+/* Deterministic fallback for contexts without crypto.subtle (a file:// PC/iPhone copy). Weaker, but
+   the threat model is a casual glance, and refusing to lock at all would serve the user worse. The
+   `plain$` prefix stops the two schemes ever being mistaken for one another. */
+function weakHash(str) {
+  let h1 = 0x811c9dc5, h2 = 0x01000193;
+  for (let i = 0; i < str.length; i++) {
+    h1 = Math.imul((h1 ^ str.charCodeAt(i)) >>> 0, 16777619) >>> 0;
+    h2 = (Math.imul((h2 ^ str.charCodeAt(i)) >>> 0, 2246822519) + i) >>> 0;
+  }
+  return "plain$" + h1.toString(16).padStart(8, "0") + h2.toString(16).padStart(8, "0");
+}
+async function hashPin(pin, salt) {
+  const data = salt + ":" + pin;
+  if (window.crypto && crypto.subtle && crypto.subtle.digest) {
+    try {
+      const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(data));
+      return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+    } catch (e) { /* fall through to the weak hash */ }
+  }
+  return weakHash(data);
+}
+function lockIsSet() { return !!(db.settings && db.settings.pinHash && db.settings.pinSalt); }
+
+let lockedNow = false, lastHiddenAt = null, wrongAttempts = 0;
+const LOCK_AFTER_MS = 10 * 60 * 1000;   /* 10 minutes, chosen by the user over 5 */
+
+function showLockScreen() {
+  lockedNow = true;
+  document.getElementById("lockScreen").style.display = "flex";
+  document.getElementById("lockPin").value = "";
+  document.getElementById("lockMsg").textContent = "";
+  setTimeout(() => { try { document.getElementById("lockPin").focus(); } catch (e) {} }, 50);
+}
+function hideLockScreen() {
+  lockedNow = false;
+  document.getElementById("lockScreen").style.display = "none";
+}
+/* Called before any view renders, so nothing can flash behind the overlay. */
+function applyLockOnLoad() { if (lockIsSet()) showLockScreen(); else hideLockScreen(); }
+
+async function tryUnlock() {
+  const pin = document.getElementById("lockPin").value.trim();
+  const msg = document.getElementById("lockMsg");
+  if (!pin) { msg.textContent = "Enter your PIN."; return; }
+  if (await hashPin(pin, db.settings.pinSalt) === db.settings.pinHash) {
+    wrongAttempts = 0; hideLockScreen(); renderAll(); return;
+  }
+  wrongAttempts++;
+  /* No lockout by design — locking the owner out of their own money data would be worse than the
+     casual snooping this deters. */
+  msg.textContent = `Wrong PIN (${wrongAttempts} attempt${wrongAttempts === 1 ? "" : "s"}). Try again.`;
+  document.getElementById("lockPin").value = "";
+  document.getElementById("lockPin").focus();
+}
+document.getElementById("lockUnlockBtn").addEventListener("click", tryUnlock);
+document.getElementById("lockPin").addEventListener("keydown", (e) => { if (e.key === "Enter") tryUnlock(); });
+
+/* Recovery has to work from THIS screen. Deleting the row in the Sheet alone is not enough, because
+   a reload reads localStorage, not the Sheet — the user would still be locked out and unable to
+   reach the sync button. So this clears the local copy and reloads, after which the app signs in
+   and pulls a fresh copy from the Sheet (where pinHash is now gone). Safe because the Sheet holds
+   the data — but genuinely destructive to anything not yet synced, so it says so. */
+document.getElementById("lockForgotBtn").addEventListener("click", () => {
+  const ok = confirm(
+    "Forgot your PIN?\n\n" +
+    "STEP 1 — In your Google Sheet, open the Settings tab and delete the row whose first cell says pinHash. Do that BEFORE continuing.\n\n" +
+    "STEP 2 — Pressing OK clears this device's local copy and reloads. You'll sign in with Google again and your data comes back from the Sheet, with no PIN.\n\n" +
+    "WARNING: anything on this device that was never synced to the Sheet will be lost. If you're not sure, press Cancel and sync from another device first.\n\n" +
+    "Continue?");
+  if (!ok) return;
+  if (!confirm("Last check: have you already deleted the pinHash row from the Settings tab of your Google Sheet?\n\nIf not, press Cancel — otherwise the PIN will simply come back when the app re-syncs.")) return;
+  try { localStorage.removeItem(STORAGE_KEY); } catch (e) {}
+  location.reload();
+});
+
+/* Re-lock after 10 minutes away — covers switching apps and returning, which a load-only lock would
+   miss entirely on an installed PWA. */
+document.addEventListener("visibilitychange", () => {
+  if (!lockIsSet()) return;
+  if (document.hidden) { lastHiddenAt = Date.now(); return; }
+  if (lastHiddenAt && Date.now() - lastHiddenAt >= LOCK_AFTER_MS && !lockedNow) showLockScreen();
+  lastHiddenAt = null;
+});
+
+function renderLockSettings() {
+  const on = lockIsSet();
+  document.getElementById("lockOffBlock").style.display = on ? "none" : "";
+  document.getElementById("lockOnBlock").style.display = on ? "" : "none";
+}
+const validPin = (p) => /^[0-9]{4,8}$/.test(p);
+
+document.getElementById("pinSetBtn").addEventListener("click", async () => {
+  const a = document.getElementById("pinNew").value.trim(), b = document.getElementById("pinNew2").value.trim();
+  const st = document.getElementById("pinStatus");
+  if (!validPin(a)) { st.textContent = "PIN must be 4 to 8 digits."; return; }
+  if (a !== b) { st.textContent = "The two PINs don't match."; return; }
+  db.settings.pinSalt = randomSaltHex();
+  db.settings.pinHash = await hashPin(a, db.settings.pinSalt);
+  saveData();
+  document.getElementById("pinNew").value = ""; document.getElementById("pinNew2").value = "";
+  renderLockSettings();
+  st.textContent = "App Lock is on. It will ask for this PIN next time the app opens.";
+  toast("App Lock turned on");
+});
+
+document.getElementById("pinChangeBtn").addEventListener("click", async () => {
+  const cur = document.getElementById("pinCurrent").value.trim(), nw = document.getElementById("pinChange").value.trim();
+  const st = document.getElementById("pinStatus");
+  if (await hashPin(cur, db.settings.pinSalt) !== db.settings.pinHash) { st.textContent = "Current PIN is wrong."; return; }
+  if (!validPin(nw)) { st.textContent = "New PIN must be 4 to 8 digits."; return; }
+  db.settings.pinSalt = randomSaltHex();
+  db.settings.pinHash = await hashPin(nw, db.settings.pinSalt);
+  saveData();
+  document.getElementById("pinCurrent").value = ""; document.getElementById("pinChange").value = "";
+  st.textContent = "PIN changed.";
+  toast("PIN changed");
+});
+
+document.getElementById("pinRemoveBtn").addEventListener("click", async () => {
+  const cur = document.getElementById("pinCurrent").value.trim();
+  const st = document.getElementById("pinStatus");
+  if (await hashPin(cur, db.settings.pinSalt) !== db.settings.pinHash) { st.textContent = "Enter your current PIN to remove the lock."; return; }
+  if (!confirm("Turn off App Lock? Anyone who opens the app will see your finances straight away.")) return;
+  delete db.settings.pinHash; delete db.settings.pinSalt;
+  saveData();
+  document.getElementById("pinCurrent").value = ""; document.getElementById("pinChange").value = "";
+  renderLockSettings();
+  st.textContent = "App Lock removed.";
+  toast("App Lock removed");
+});
 
 /* ===== Multi-currency (Section 3.15) =====
    Currency belongs to the ACCOUNT. Per-account balances are therefore already single-currency and
@@ -2779,9 +2976,9 @@ async function onTokenResponse(resp) {
     const localHasData = db.transactions.length > 0;
     if (sheetHasData && localHasData) {
       const useSheet = confirm("Both this device and your Google Sheet already have data.\n\nOK = use the Google Sheet's data (recommended if you've synced before).\nCancel = upload THIS device's data instead, overwriting the Sheet.");
-      if (useSheet) { db = sheetData; saveLocalOnly(); renderAll(); }
+      if (useSheet) { db = sheetData; saveLocalOnly(); renderLockSettings(); applyLockOnLoad(); renderAll(); }
       else { await pushAllToSheet(); }
-    } else if (sheetHasData) { db = sheetData; saveLocalOnly(); renderAll(); }
+    } else if (sheetHasData) { db = sheetData; saveLocalOnly(); renderLockSettings(); applyLockOnLoad(); renderAll(); }
     else { await pushAllToSheet(); }
     lastSyncedAt = new Date();
     toast("Signed in — connected to Google Sheets");
@@ -2848,19 +3045,30 @@ function coerceTypesFromSheet(raw) {
   const transactions = raw.Transactions.filter((r) => r.id).map((r) => ({ id: r.id, type: r.type, date: r.date, accountId: r.accountId, categoryId: r.categoryId, amount: parseFloat(r.amount) || 0, description: r.description || "", isReconciliation: String(r.isReconciliation).toUpperCase() === "TRUE", bucket: r.bucket || "personal", transferId: r.transferId ? String(r.transferId) : "", ref: r.ref ? String(r.ref) : "", panel: r.panel ? String(r.panel) : "", credits: Number(r.credits) > 0 ? Number(r.credits) : 0 }));
   const budgets = raw.Budgets.filter((r) => r.id).map((r) => ({ id: r.id, categoryId: r.categoryId, month: r.month, amount: parseFloat(r.amount) || 0 }));
   const reconciliations = raw.Reconciliations.filter((r) => r.id).map((r) => ({ id: r.id, accountId: r.accountId, date: r.date, actualBalance: parseFloat(r.actualBalance) || 0, computedBefore: parseFloat(r.computedBefore) || 0, diff: parseFloat(r.diff) || 0 }));
-  return { categories, accounts, transactions, budgets, reconciliations,
-    settings: { currency: settingsCurrency, rates: settingsRates, displayCurrencies: settingsDisplay } };
+  const settings = { currency: settingsCurrency, rates: settingsRates, displayCurrencies: settingsDisplay };
+  /* Absent rows mean no lock — a Settings tab written before this feature simply loads unlocked. */
+  const ph = settingRow("pinHash"), ps = settingRow("pinSalt");
+  if (ph && ps) { settings.pinHash = String(ph); settings.pinSalt = String(ps); }
+  return { categories, accounts, transactions, budgets, reconciliations, settings };
 }
 
 function buildRowsForTab(tab) {
   const cols = SHEET_TABS[tab];
   /* Several key/value rows now, not just currency (Section 3.15). Rates go as JSON in one cell so
      adding a currency never needs another sheet column. */
-  if (tab === "Settings") return [cols,
-    ["currency", db.settings.currency || "PKR"],
-    ["rates", JSON.stringify(db.settings.rates || {})],
-    ["displayCurrencies", (db.settings.displayCurrencies || []).join(",")],
-  ];
+  if (tab === "Settings") {
+    const rows = [cols,
+      ["currency", db.settings.currency || "PKR"],
+      ["rates", JSON.stringify(db.settings.rates || {})],
+      ["displayCurrencies", (db.settings.displayCurrencies || []).join(",")],
+    ];
+    /* Only written when a lock is set, so "no pinHash row" unambiguously means "no lock" — which is
+       what makes the recovery instruction (delete the row) work (Section 3.16). */
+    if (db.settings.pinHash && db.settings.pinSalt) {
+      rows.push(["pinHash", db.settings.pinHash], ["pinSalt", db.settings.pinSalt]);
+    }
+    return rows;
+  }
   const key = tab.toLowerCase();
   const items = db[key] || [];
   return [cols, ...items.map((item) => cols.map((c) => (item[c] !== undefined && item[c] !== null ? item[c] : "")))];
@@ -2915,7 +3123,7 @@ document.getElementById("syncNowBtn").addEventListener("click", async () => {
     repairOrphanedParents(sheetData);
     repairReconciliationBuckets(sheetData);
     ensureCategoryOrder(sheetData);
-    db = sheetData; saveLocalOnly(); renderAll();
+    db = sheetData; saveLocalOnly(); renderLockSettings(); applyLockOnLoad(); renderAll();
     lastSyncedAt = new Date(); lastSyncError = null;
     toast("Synced from Google Sheets");
   } catch (err) { console.error(err); lastSyncError = err.message; alert("Sync failed: " + err.message); }
@@ -2979,7 +3187,12 @@ initCurrencySelect();
 populateAccountSelect(txAccountSelect, false, transactionsLedger);
 populateCategorySelect(txCategorySelect, "expense", false, transactionsLedger);
 document.getElementById("txDate").value = todayISO();
-renderAll();
+/* Lock BEFORE the first render, and skip rendering entirely while locked so the figures are never
+   even placed in the page — not merely hidden behind the overlay (Section 3.16). tryUnlock() calls
+   renderAll() once the PIN is accepted. */
+applyLockOnLoad();
+renderLockSettings();
+if (!lockedNow) renderAll();
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => { navigator.serviceWorker.register("sw.js").catch(() => {}); });
