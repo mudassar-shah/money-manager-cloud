@@ -438,7 +438,17 @@ Rates are **entered manually**, with an optional "get latest" button. Deliberate
 
 **Cross-currency transfers (3.10, 3.14).** When the two accounts share a currency the form is unchanged — one amount. When they differ, a **second amount box** appears: what left, and what actually arrived. The user types the received figure from their bank, because a bank's real rate and fees never match a published rate; the saved rate only pre-fills it as a suggestion. The two halves therefore hold **different amounts**, which is why `Mark as Transfer` no longer requires equal amounts when the accounts' currencies differ. No fee transaction is derived — whether the spread is a "loss" depends on which rate you consider true, so that judgement is left to the user.
 
-**Conversion display.** The Accounts and Dashboard tabs show the main-currency total with an "also worth" line in the user's chosen currencies. Business figures get the same treatment and remain entirely separate from personal, as always.
+**Conversion display.** An "also worth" line in the user's chosen currencies appears beneath:
+- **Total Balance** (Accounts) and **Total Business Balance** (Business)
+- The **Dashboard's monthly** Income, Expenses and Net This Month
+- The **Business tab's monthly** Income, Expenses and Net Profit
+- The **Yearly Report's** Total Income, Total Expenses and Net
+
+The purpose the user stated is planning a move: *"what amount of USD does my family actually need for expenses"*. Converting the **monthly** figures answers that directly.
+
+**Savings Rate and Profit Margin are never converted** — they are percentages.
+
+**Net worth deliberately stays off the Dashboard.** Only *month-scoped* figures are converted there. Section 3.3a removed Total Balance from the Dashboard as a privacy decision, and adding a converted net-worth line would silently reverse it. This was raised with the user, who confirmed they wanted the monthly figures, not the balance.
 
 **Migration.** Every existing account is set to PKR, so on the day of release **every figure must be byte-identical to before**. That equality is the release test (8.26) and is only available while all data is single-currency — which is precisely why this was done before the user moves abroad.
 

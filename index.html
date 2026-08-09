@@ -258,17 +258,17 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
         <div class="card stat income">
           <div class="stat-label">Income</div>
           <div class="stat-value" id="statIncome">-</div>
-          <div class="stat-sub">This month</div>
+          <div class="stat-sub" id="statIncomeConv">This month</div>
         </div>
         <div class="card stat expense">
           <div class="stat-label">Expenses</div>
           <div class="stat-value" id="statExpense">-</div>
-          <div class="stat-sub">This month</div>
+          <div class="stat-sub" id="statExpenseConv">This month</div>
         </div>
         <div class="card stat">
           <div class="stat-label">Net This Month</div>
           <div class="stat-value" id="statNet">-</div>
-          <div class="stat-sub">This month</div>
+          <div class="stat-sub" id="statNetConv">This month</div>
         </div>
         <div class="card stat">
           <div class="stat-label">Savings Rate</div>
@@ -608,17 +608,17 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
         <div class="card stat income">
           <div class="stat-label">Total Income</div>
           <div class="stat-value" id="fyIncome">-</div>
-          <div class="stat-sub">Full fiscal year</div>
+          <div class="stat-sub" id="fyIncomeConv">Full fiscal year</div>
         </div>
         <div class="card stat expense">
           <div class="stat-label">Total Expenses</div>
           <div class="stat-value" id="fyExpense">-</div>
-          <div class="stat-sub">Full fiscal year</div>
+          <div class="stat-sub" id="fyExpenseConv">Full fiscal year</div>
         </div>
         <div class="card stat">
           <div class="stat-label" id="fyNetLabel">Net Savings</div>
           <div class="stat-value" id="fyNet">-</div>
-          <div class="stat-sub">Income minus expenses</div>
+          <div class="stat-sub" id="fyNetConv">Income minus expenses</div>
         </div>
         <div class="card stat">
           <div class="stat-label" id="fyRateLabel">Savings Rate</div>
@@ -687,17 +687,17 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
         <div class="card stat income">
           <div class="stat-label">Income</div>
           <div class="stat-value" id="bizIncome">-</div>
-          <div class="stat-sub">This month</div>
+          <div class="stat-sub" id="bizIncomeConv">This month</div>
         </div>
         <div class="card stat expense">
           <div class="stat-label">Expenses</div>
           <div class="stat-value" id="bizExpense">-</div>
-          <div class="stat-sub">This month</div>
+          <div class="stat-sub" id="bizExpenseConv">This month</div>
         </div>
         <div class="card stat">
           <div class="stat-label">Net Profit</div>
           <div class="stat-value" id="bizNet">-</div>
-          <div class="stat-sub">This month</div>
+          <div class="stat-sub" id="bizNetConv">This month</div>
         </div>
         <div class="card stat">
           <div class="stat-label">Total Business Balance</div>
@@ -1083,6 +1083,15 @@ function fmtMoney(n, code) {
   const sign = n < 0 ? "-" : ""; const abs = Math.abs(n);
   return `${sign}${symbol} ${abs.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
+/* Writes "This month · ≈ …" under a stat card, or leaves the plain label when no display
+   currencies are chosen or no rate is available. */
+function setConvertedSub(elId, amountInMain, baseLabel) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  const base = baseLabel || "This month";
+  const conv = conversionLine(amountInMain);
+  el.textContent = conv ? `${base} · ${conv}` : base;
+}
 /* "Also worth" line: the same total expressed in the user's chosen currencies. */
 function conversionLine(amountInMain) {
   const chosen = (db.settings && db.settings.displayCurrencies) || [];
@@ -1220,6 +1229,12 @@ function renderDashboard() {
   document.getElementById("statIncome").textContent = fmtMoney(monthIncome);
   document.getElementById("statExpense").textContent = fmtMoney(monthExpense);
   document.getElementById("statNet").textContent = fmtMoney(monthIncome - monthExpense);
+  /* This month's figures in the user's chosen currencies — for judging what a month actually costs
+     abroad (Section 3.15). Deliberately the MONTH figures only: net worth stays off the Dashboard
+     as decided for privacy in Section 3.3a. */
+  setConvertedSub("statIncomeConv", monthIncome);
+  setConvertedSub("statExpenseConv", monthExpense);
+  setConvertedSub("statNetConv", monthIncome - monthExpense);
   document.getElementById("statSavingsRate").textContent = `${savingsRate.toFixed(1)}%`;
   renderDonutChart(monthTx, "donutChartWrap");
   renderBarChart(dashMonth, "barChartWrap", "personal");
@@ -1347,6 +1362,9 @@ function renderBusinessView() {
   document.getElementById("bizIncome").textContent = fmtMoney(income);
   document.getElementById("bizExpense").textContent = fmtMoney(expense);
   document.getElementById("bizNet").textContent = fmtMoney(income - expense);
+  setConvertedSub("bizIncomeConv", income);
+  setConvertedSub("bizExpenseConv", expense);
+  setConvertedSub("bizNetConv", income - expense);
   const bizTotal = totalNetWorth("business");
   document.getElementById("bizBalance").textContent = fmtMoney(bizTotal);
   const bizConv = conversionLine(bizTotal);
@@ -2315,6 +2333,9 @@ function renderYearlyView() {
   document.getElementById("fyExpense").textContent = fmtMoney(expense);
   document.getElementById("fyNet").textContent = fmtMoney(net);
   document.getElementById("fySavingsRate").textContent = `${rate.toFixed(1)}%`;
+  setConvertedSub("fyIncomeConv", income, "Full fiscal year");
+  setConvertedSub("fyExpenseConv", expense, "Full fiscal year");
+  setConvertedSub("fyNetConv", net, "Income minus expenses");
   /* Same arithmetic, business-appropriate labels — matching the Business tab's naming (3.8). */
   document.getElementById("fyNetLabel").textContent = isBusiness ? "Net Profit" : "Net Savings";
   document.getElementById("fyRateLabel").textContent = isBusiness ? "Profit Margin" : "Savings Rate";
