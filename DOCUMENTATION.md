@@ -596,6 +596,46 @@ How it works:
 
 This exact gap — a field added to the write side but not the read side — is what caused the subcategory/order data loss. Section 8.7 is the mandatory test for this class of bug.
 
+### 5.1 Sync merges, it never replaces (three-way merge)
+
+**The bug this replaces.** Until 2026-08-25 both pull paths *replaced* the local dataset outright:
+
+- `syncNowBtn` did `db = sheetData; saveLocalOnly();` with **no warning of any kind**. Anything entered on this device since the last push was destroyed. This is the reported "I enter some entries, then sync, and I have to enter them again" data loss.
+- `onTokenResponse` asked an all-or-nothing `confirm()` — OK took the Sheet (losing local entries), Cancel pushed local over the Sheet (losing the other device's entries). There was no third option, and the prompt did not say how many records were at stake.
+- `scheduleCloudPush` returns early unless `accessToken` is set, so anything entered while signed out or offline never left the device on its own — it just sat there waiting to be destroyed by the next pull.
+
+**The rule now: combine, never replace.** Every record already carries a unique `id`, so the two sides can be reconciled instead of one winning wholesale.
+
+**Why a three-way merge and not a simple union.** A plain union (keep every id from both sides) can never lose a record, but it *resurrects deleted ones*: delete a wrong transaction locally, sync, and it comes back from the Sheet, silently changing balances. For a financial ledger that is a real correctness bug, not a cosmetic one. So the merge uses a third input — a **snapshot** of the dataset as it stood at the end of the last successful sync (`mm_cloud_snapshot` in localStorage) — which makes it possible to tell "this record is new here" apart from "this record was deleted there".
+
+For each record `id`, comparing **local**, **sheet**, and **snapshot**:
+
+| In snapshot? | In local? | In sheet? | Meaning | Result |
+|---|---|---|---|---|
+| no | yes | no | added on this device | **keep** (goes up to the Sheet) |
+| no | no | yes | added on another device | **keep** (comes down to this device) |
+| yes | no | yes | deleted on this device | **drop** (deletion propagates up) |
+| yes | yes | no | deleted on another device | **drop** (deletion propagates down) |
+| yes | yes | yes, unchanged locally | edited on another device | take the **sheet** version |
+| yes | yes | yes, unchanged in sheet | edited on this device | take the **local** version |
+| yes | yes | yes, both differ | edited in both places | take the **local** version, and report it |
+
+The last row is the only genuine conflict, and it can only happen if the *same* record is edited on two devices without a sync in between. Local wins because that is the device the user is sitting at and can see; the count is surfaced in the toast so it is never silent.
+
+**Per-entity handling:**
+
+- `categories`, `accounts`, `transactions`, `budgets`, `reconciliations` — three-way merged by `id` as above.
+- `logs` — **union only**, then sorted by `at` and capped to the newest `LOG_LIMIT` (Section 3.17). Log entries are append-only and are never edited or individually deleted, so the delete/edit rules do not apply and no snapshot is needed. This also keeps the snapshot small, since logs are the bulkiest tab.
+- `settings` — a key/value object, not a list, so the same three-way table is applied **per key** (`currency`, `rates`, `displayCurrencies`, `pinHash`, `pinSalt`, `recoveryHash`, `recoverySalt`). This is what lets clearing the App Lock on one device propagate rather than being undone by the next sync.
+
+**The snapshot is written only after a push succeeds**, at which point local, sheet and snapshot are by definition identical. If the push fails the snapshot is left alone, so the next sync still knows what was pending — a failed sync can never cause a loss.
+
+**Ordering within a sync is always merge → push → save snapshot.** Pulling without pushing afterwards would leave this device's additions unrecorded in the Sheet; pushing without merging first is exactly the old destructive behaviour. `pushAllToSheet` is still a full `batchClear` + rewrite, which is safe *only because* the thing being pushed is the merged (complete) dataset — never a partial one. **Do not call `pushAllToSheet` with a dataset that has not been merged first.**
+
+**Unsynced-changes indicator.** The same snapshot gives the count of records that differ between `db` and the snapshot, shown in the Cloud Sync tab as e.g. *"3 changes not yet in the Sheet"*. This is the cheapest safeguard of the lot: the previous design gave no way at all to tell that work was sitting only on the device.
+
+**Auto-reconnect when the connection returns.** A `window` `online` listener attempts a silent `requestAccessToken({ prompt: "none" })` when the device comes back online with a configured-but-disconnected sync, which runs the normal merge-and-push path. Entries made offline therefore reach the Sheet by themselves rather than waiting for the user to remember. It is a silent attempt — if consent has lapsed it fails quietly and the Sign in button remains, exactly as on first run.
+
 ---
 
 ## 6. Why fields go missing after sync (root cause, and how to never repeat it)
@@ -610,7 +650,8 @@ When a new field is added to categories, accounts, or transactions (like `parent
 ## 7. Known Limitations (by design, not bugs)
 
 - **PC and iPhone copies never sync with the Cloud copy or each other.** Each is a fully separate local dataset. Moving data between them requires Export Backup → Import Backup manually.
-- **No true multi-device conflict resolution.** If you edit on two devices without syncing in between, importing/pulling one will fully overwrite the other — there is no merge.
+- **Same-record edit conflicts resolve to the local device.** Cloud Sync does merge properly as of 2026-08-25 (Section 5.1), so additions and deletions on either side always survive. The one case it cannot decide by itself is the *same* record edited on two devices without a sync in between: the device doing the sync wins, and the toast reports how many records that applied to. There is no per-field merge and no edit history.
+- **Import Backup still fully replaces.** Section 5.1's merge applies to Google Sheets sync only. Import Backup is deliberately a wholesale restore, since that is the point of restoring a backup.
 - **Business tab has no budgeting.** Budgets are personal-only by design, and the Yearly Report's "Annual Budget vs Actual" card is hidden in Business mode for the same reason. (The Yearly Report itself covers both ledgers as of 2026-08-08 — Section 3.7.)
 - **Cloud Sync requires you to have completed the Google Cloud Console + Google Sheet setup once** (Client ID + Sheet ID entered in the Cloud Sync tab). This is per-person — see Section 9 for how someone else would set up their own.
 
@@ -649,6 +690,22 @@ When a new field is added to categories, accounts, or transactions (like `parent
 **8.15 Net This Month stat** — add income and expense transactions in the same month, confirm "Net This Month" equals Income − Expense exactly; switch months and confirm it recalculates per month; confirm the Business tab's 4-card stat grid is unaffected (still `repeat(4, 1fr)` on desktop) and its "Net Profit" figure is untouched.
 
 **8.16 Total Balance moved to Accounts** — confirm the Dashboard has exactly 4 stat cards (Income, Expenses, Net This Month, Savings Rate) and no Total Balance card anywhere on it; confirm the Accounts tab's "Your Accounts" card shows "Total Balance (Personal)" matching the sum of personal accounts' `accountCurrentBalance`, and that it excludes any business accounts even though the account list below it shows both; confirm switching Dashboard months does not affect the Accounts tab figure at all (it's not month-scoped); confirm the Business tab's "Total Business Balance" is untouched.
+
+**8.29 Sync merge (Section 5.1)** — this is the test that guards against the exact loss that was reported, so run every line of it:
+
+- **The reported case**: with entries already in the Sheet, add new transactions on the device *without* syncing, then press **Sync Now**. Every one of the new transactions must still be present afterwards, **and** must now be in the Sheet. Before the fix this test loses all of them.
+- **The reverse case**: put a record in the Sheet that this device has never seen, sync, and confirm it arrives without disturbing anything local.
+- **Both at once**: additions on both sides in the same sync — confirm the result is the union and that no id is duplicated.
+- **Deletion propagates, and does not resurrect**: delete a transaction on the device, sync, confirm it is gone from the Sheet *and* does not reappear on the next sync. Then delete one directly in the Sheet, sync, and confirm it disappears locally.
+- **Edit, one side only**: edit a record locally without syncing, sync, confirm the local edit survives and reaches the Sheet. Then edit a record only in the Sheet, sync, and confirm the sheet's version lands locally.
+- **Edit, both sides (conflict)**: edit the same record in both places, sync, confirm the local version wins and the toast reports 1 conflict.
+- **Sign-in path**: confirm signing in performs the same merge and that the old all-or-nothing `confirm()` prompt is gone entirely — data must never again depend on which button was pressed.
+- **Failed push leaves the snapshot alone**: force a push failure (disconnect mid-sync), confirm the unsynced-changes count does **not** reset to zero and the pending records are still pushed on the following successful sync.
+- **First-ever sync**: with no snapshot in localStorage, confirm a device with local data and a Sheet with data merges to the union rather than either side being dropped.
+- **Balances after merge**: recompute total balance and the month's income/expense by hand from the merged transaction list and confirm they match what the app shows — a merge that silently duplicates or drops one row would show up here and nowhere else.
+- **Settings merge**: change the main currency on one side only and confirm it propagates; clear the App Lock on one device and confirm the next sync does not restore it.
+- **Logs**: confirm log entries from both sides survive a merge, stay newest-first, and are still capped at 400.
+- **Round-trip (8.7)** remains mandatory: every field listed in Section 5 must survive the merge, not just the ids.
 
 **8.28 Activity log (Section 3.17)** — the log must never become the thing that breaks the app it records:
 - Add, edit and delete a transaction and confirm one entry appears for each, newest first, with the local date and time, the device name, and — on the edit — the before → after value.
@@ -854,6 +911,9 @@ This mobile layout work applies to the **Cloud** copy first, since that's the on
 ---
 
 ## Change Log
+
+- **2026-08-25 (sync merges instead of replacing — data-loss fix)** — User reported entries made without syncing disappearing on the next sync, forcing re-entry. Root cause found in the code, not guessed: **both pull paths replaced the local dataset outright.** `syncNowBtn` did `db = sheetData; saveLocalOnly();` with no warning of any kind — a download-only masquerading as a sync, which destroyed everything entered since the last push. `onTokenResponse` asked an all-or-nothing `confirm()` where OK discarded local entries and Cancel discarded the Sheet's, with no indication of how many records either answer would cost. And `scheduleCloudPush` returns early without an `accessToken`, so anything entered offline or signed-out never left the device on its own — it simply waited to be destroyed. Replaced with a **three-way merge** (new Section 5.1): local, sheet, and a `mm_cloud_snapshot` of the last successful sync are compared per record `id`, so additions on either side always survive **and** deletions propagate instead of being resurrected. A plain union was rejected precisely because it resurrects deleted rows, which silently changes balances — a correctness bug in a ledger, not a cosmetic one. Same rules applied per key to `settings` (so clearing the App Lock propagates); `logs` are union-merged, sorted and capped, needing no history since they are append-only. All three paths now go through one `syncWithSheet()` that always does **merge → push → save snapshot**, in that order — including `scheduleCloudPush`, which previously pushed without merging and would have wiped a second signed-in device's additions from the Sheet (whose snapshot would then have read the absence as a deletion and dropped them locally too). The snapshot is written only *after* a successful push, so a failed sync leaves the pending work recorded for the next attempt. Also added: an `online` listener that silently reconnects and syncs so offline entries reach the Sheet by themselves; a "*N* changes not yet in the Sheet" indicator in the Cloud Sync tab (the old design gave no way at all to tell that work was sitting only on the device); and `clearSnapshot()` on Disconnect and on the PIN-recovery path — the latter is critical, since that path deliberately starts blank and a surviving snapshot would have made the merge read every record as "deleted here" and erase the Sheet instead of restoring from it. A **new-device adoption path** was added after testing showed the gap: `loadData()` seeds `DEFAULT_CATEGORIES` and a "Cash" account with fresh ids, so union-merging a brand-new device into a populated Sheet duplicated every default category — with no snapshot and no real work on the device (zero transactions, budgets, reconciliations and logs), the Sheet is now adopted whole, as the old sign-in flow did. **Verified by a 51-assertion suite run in headless Chrome against the real code** (Section 8.29), covering the reported case end to end, additions/deletions/edits on each side and both, no-resurrection across consecutive syncs, conflict reporting, first-ever sync, settings and App Lock propagation, log union and cap, the pending counter, every `Transactions` column surviving the round trip, a simulated push failure leaving the work pending and going up on the next sync, and a hand-recomputed balance after a merge (opening 100,000 − three merged expenses = 97,900, matched exactly). All 51 pass with zero JS errors, plus a separate smoke test confirming normal rendering is unaffected (balance 48,800, net worth 48,800, dashboard populated). Two failures during the run were my own bad assertions, not code defects — `accountCurrentBalance` takes an id rather than an account object, and the category count legitimately includes the 8 auto-seeded business categories — both re-asserted correctly rather than relaxed. **Cloud copy only**: the PC and iPhone copies have no Cloud Sync layer (Section 1), confirmed by grep, so there is nothing to mirror.
+- **Action required**: upload `index.html` to the GitHub repo for this to go live.
 
 - **2026-07-07** — Added Business ledger (bucket field on categories/accounts/transactions), Business tab, Personal/Business category toggle. Added `bucket`, `parentId`, `order` to Cloud Sync schema (read + write) after discovering they were missing (see Section 6). Added subcategory-with-children guard and auto-repair. Added category drag-free reordering (↑/↓ buttons). Added Yearly Report, Budget Total row, multi-select delete, category name truncation with tooltip. This document created.
 - **2026-07-07 (exhaustive formula audit)** — Ran a full pass of Section 8 against all three copies plus the live Cloud data. Found and fixed 4 real bugs, all applied to Cloud/PC/iPhone identically and verified by direct testing:
