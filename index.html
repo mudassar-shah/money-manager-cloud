@@ -1,4 +1,5 @@
-<!DOCTYPE html>
+
+  toast("Account added");<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -274,6 +275,7 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
       <button class="nav-btn" data-view="business">Business</button>
       <button class="nav-btn" data-view="categories">Categories</button>
       <button class="nav-btn" data-view="cloudsync">Cloud Sync <span id="navSyncBadge" class="sync-badge off"></span></button>
+      <button class="nav-btn" data-view="logs">Activity Log</button>
     </nav>
     <div class="sidebar-footer">
       <button id="exportBtn" class="ghost-btn">Export Backup</button>
@@ -1003,6 +1005,42 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
       </div>
     </section>
 
+    <!-- ACTIVITY LOG -->
+    <section id="view-logs" class="view">
+      <header class="view-header">
+        <h1>Activity Log</h1>
+        <span id="logCount" class="cat-hint"></span>
+      </header>
+      <p class="hint">A plain record of everything that changed — what, when, and which device it was done on. Useful for answering "when did this entry change, and what was it before?"</p>
+
+      <div class="card">
+        <div class="form-row" style="margin-bottom:0;">
+          <label>This device's name
+            <input type="text" id="deviceNameInput" maxlength="24" placeholder="e.g. PC, iPhone, Office">
+          </label>
+          <button type="button" id="deviceNameSaveBtn" class="primary-btn">Save Name</button>
+          <label class="grow">Search the log
+            <input type="text" id="logSearch" placeholder="e.g. Grocery, deleted, 4,009" autocomplete="off">
+          </label>
+          <button type="button" id="logClearBtn" class="ghost-btn danger small">Clear Log</button>
+        </div>
+        <p class="hint" style="margin:10px 0 0;">The device name stays on this device only — it is never synced, so your phone and your computer each keep their own name. Everything else in the log is shared between your devices.</p>
+      </div>
+
+      <div class="card">
+        <div class="table-wrap">
+          <table class="tx-table">
+            <thead>
+              <tr><th style="width:20%">When</th><th style="width:12%">Device</th><th style="width:22%">Action</th><th>Details</th></tr>
+            </thead>
+            <tbody id="logBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <p class="hint">This is a record for you, not tamper-proof proof. It is stored alongside your data, so anyone who could change your data could change this too. Only the newest 400 entries are kept.</p>
+    </section>
+
   </main>
 </div>
 
@@ -1012,6 +1050,29 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
 /* ===================== Core app (local-first) ===================== */
 
 const STORAGE_KEY = "moneyManagerData";
+/* Device name lives in its OWN key, deliberately outside db so it never syncs — otherwise every
+   device would share one name and the log could not tell you where a change was made (3.17). */
+const DEVICE_KEY = "moneyManagerDevice";
+const LOG_LIMIT = 400;
+
+function deviceName() {
+  try { return localStorage.getItem(DEVICE_KEY) || "This device"; } catch (e) { return "This device"; }
+}
+function setDeviceName(name) {
+  try { localStorage.setItem(DEVICE_KEY, (name || "").trim().slice(0, 24)); } catch (e) {}
+}
+function logStamp() {
+  const d = new Date(), p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+/* Appends one entry and trims to the newest LOG_LIMIT. Deliberately does NOT save: every caller
+   saves immediately afterwards as part of the action being logged, so the entry rides along in the
+   same write and the same cloud push. Rule: log first, then save (3.17). */
+function logAction(action, detail) {
+  if (!db.logs) db.logs = [];
+  db.logs.push({ id: uid(), at: logStamp(), device: deviceName(), action: String(action || ""), detail: String(detail || "") });
+  if (db.logs.length > LOG_LIMIT) db.logs = db.logs.slice(db.logs.length - LOG_LIMIT);
+}
 const CLOUD_CONFIG_KEY = "moneyManagerCloudConfig";
 
 /* Each currency carries its own colour so a wide conversion table reads as distinct columns rather
@@ -1071,10 +1132,12 @@ function loadData() {
   let data;
   if (raw) { try { data = JSON.parse(raw); } catch (e) { console.error("Corrupt data, reinitializing", e); } }
   if (!data) {
-    data = { categories: DEFAULT_CATEGORIES.map((c) => ({ id: uid(), bucket: "personal", ...c })), transactions: [], budgets: [], accounts: [], reconciliations: [], settings: { currency: "PKR" } };
+    data = { categories: DEFAULT_CATEGORIES.map((c) => ({ id: uid(), bucket: "personal", ...c })), transactions: [], budgets: [], accounts: [], reconciliations: [], logs: [], settings: { currency: "PKR" } };
   }
   if (!Array.isArray(data.accounts)) data.accounts = [];
   if (!Array.isArray(data.reconciliations)) data.reconciliations = [];
+  /* Data saved before the log existed simply starts with an empty one (3.17). */
+  if (!Array.isArray(data.logs)) data.logs = [];
   if (data.accounts.length === 0) {
     const defaultAccount = { id: uid(), name: "Cash", type: "cash", openingBalance: 0, openingDate: todayISO(), color: "#6366f1", bucket: "personal" };
     data.accounts.push(defaultAccount);
@@ -1181,6 +1244,7 @@ function moveCategory(id, direction) {
   const tmp = a.order || 0;
   a.order = b.order || 0;
   b.order = tmp;
+  logAction("Reordered category", `${a.name} moved ${direction}`);
   saveData();
   renderCategoriesView();
   renderTransactionsView();
@@ -1380,6 +1444,7 @@ document.getElementById("pinSetBtn").addEventListener("click", async () => {
   db.settings.pinSalt = randomSaltHex();
   db.settings.pinHash = await hashPin(a, db.settings.pinSalt);
   const code = await issueRecoveryCode();
+  logAction("Turned on App Lock", "A PIN is now required to open the app, on every synced device");
   saveData();
   document.getElementById("pinNew").value = ""; document.getElementById("pinNew2").value = "";
   renderLockSettings();
@@ -1395,6 +1460,7 @@ document.getElementById("pinChangeBtn").addEventListener("click", async () => {
   if (!validPin(nw)) { st.textContent = "New PIN must be 4 to 8 digits."; return; }
   db.settings.pinSalt = randomSaltHex();
   db.settings.pinHash = await hashPin(nw, db.settings.pinSalt);
+  logAction("Changed the App Lock PIN", "PIN replaced");
   saveData();
   document.getElementById("pinCurrent").value = ""; document.getElementById("pinChange").value = "";
   st.textContent = "PIN changed.";
@@ -1621,7 +1687,11 @@ document.getElementById("importFile").addEventListener("change", (e) => {
       if (!parsed.categories || !parsed.transactions) throw new Error("Invalid file");
       if (!Array.isArray(parsed.accounts)) parsed.accounts = [];
       if (!Array.isArray(parsed.reconciliations)) parsed.reconciliations = [];
-      db = parsed; saveData(); renderAll();
+      /* Logged onto the IMPORTED data, so the record of the import survives in what replaced it. */
+      db = parsed;
+      if (!Array.isArray(db.logs)) db.logs = [];
+      logAction("Imported a backup", "All data on this device was replaced from a backup file");
+      saveData(); renderAll();
       toast("Backup imported");
     } catch (err) { alert("Could not import file: " + err.message); }
   };
@@ -1817,7 +1887,10 @@ document.getElementById("accountForm").addEventListener("submit", (e) => {
   const openingDate = document.getElementById("accOpeningDate").value || todayISO();
   const color = document.getElementById("accColor").value;
   if (!name) return;
-  db.accounts.push({ id: uid(), name, bucket, type, openingBalance, openingDate, color, excludeFromBalance: document.getElementById("accExclude").checked, currency: document.getElementById("accCurrency").value || mainCurrency() });
+  const newAccCurrency = document.getElementById("accCurrency").value || mainCurrency();
+  db.accounts.push({ id: uid(), name, bucket, type, openingBalance, openingDate, color, excludeFromBalance: document.getElementById("accExclude").checked, currency: newAccCurrency });
+  /* Read the currency and log BEFORE saving — and before e.target.reset() clears the form (3.17). */
+  logAction("Added account", `${name} · ${bucket} · ${newAccCurrency} · opening ${openingBalance}`);
   saveData();
   e.target.reset();
   document.getElementById("accColor").value = "#3b82f6";
@@ -1829,8 +1902,11 @@ document.getElementById("accountForm").addEventListener("submit", (e) => {
 function deleteAccount(id) {
   if (db.transactions.some((t) => t.accountId === id)) { alert("This account has transactions linked to it and can't be deleted. Reassign or delete those first."); return; }
   if (!confirm("Delete this account?")) return;
+  /* Capture the name before removing it, and log before saving (3.17). */
+  const gone = getAccount(id);
   db.accounts = db.accounts.filter((a) => a.id !== id);
   db.reconciliations = db.reconciliations.filter((r) => r.accountId !== id);
+  logAction("Deleted account", `${(gone && gone.name) || id}`);
   saveData(); renderAccountsView(); renderAll();
   toast("Account deleted");
 }
@@ -1870,6 +1946,7 @@ document.getElementById("crossForm").addEventListener("submit", (e) => {
   if (received === null) { alert(`No exchange rate is set between ${accountCurrency(fromId)} and ${accountCurrency(toId)}.\n\nEither set the rate in "Currencies & Exchange Rates" above, or type the amount received.`); return; }
   db.transactions.push({ id: uid(), type: "expense", date, accountId: fromId, categoryId: ensureTransferCategory("expense", fromBucket), amount, description, bucket: fromBucket, transferId });
   db.transactions.push({ id: uid(), type: "income", date, accountId: toId, categoryId: ensureTransferCategory("income", toBucket), amount: received, description, bucket: toBucket, transferId });
+  logAction("Business ↔ Personal transfer", `${fmtMoney(amount)} · ${from.name} (${fromBucket}) → ${to.name} (${toBucket}) · ${date}`);
   saveData();
   document.getElementById("crossAmount").value = "";
   document.getElementById("crossReceived").value = ""; document.getElementById("crossReceived").dataset.touched = "";
@@ -1946,6 +2023,7 @@ document.getElementById("saveRatesBtn").addEventListener("click", () => {
   db.settings.rates = rates;
   db.settings.currency = document.getElementById("mainCurrencySelect").value;
   db.settings.displayCurrencies = Array.from(document.querySelectorAll(".disp-cur")).filter((c) => c.checked).map((c) => c.value);
+  logAction("Saved currency settings", `main ${db.settings.currency} · shown in ${(db.settings.displayCurrencies || []).join(", ") || "none"} · rates ${Object.entries(db.settings.rates || {}).map(([k, v]) => k + "=" + v).join(", ") || "none"}`);
   saveData();
   renderCurrencySettings(); renderAll();
   toast("Currency settings saved");
@@ -1978,6 +2056,7 @@ function toggleAccountExclude(accountId) {
   const acc = getAccount(accountId);
   if (!acc) return;
   acc.excludeFromBalance = !acc.excludeFromBalance;
+  logAction(acc.excludeFromBalance ? "Excluded account from Total Balance" : "Included account in Total Balance", acc.name);
   saveData();
   renderAccountsView(); renderAll();
   toast(acc.excludeFromBalance ? `"${acc.name}" is no longer counted in Total Balance` : `"${acc.name}" is counted in Total Balance again`);
@@ -2001,6 +2080,7 @@ function submitReconcile(accountId) {
     const categoryId = ensureAdjustmentCategory(type, bucket);
     db.transactions.push({ id: uid(), type, date: dateStr, accountId, categoryId, amount: Math.abs(diff), description: "Reconciliation adjustment", isReconciliation: true, bucket });
   }
+  logAction("Reconciled account", `${(getAccount(accountId) || {}).name || "?"} · as of ${dateStr} · app showed ${fmtMoney(computed, accountCurrency(accountId))}, bank showed ${fmtMoney(actualBalance, accountCurrency(accountId))}${Math.abs(diff) < 0.01 ? " · already matched" : ` · adjustment ${fmtMoney(diff, accountCurrency(accountId))}`}`);
   saveData();
   expandedReconcileAccountId = null;
   renderAccountsView(); renderAll();
@@ -2185,8 +2265,25 @@ document.getElementById("txForm").addEventListener("submit", (e) => {
     if (existingTx.isReconciliation) record.isReconciliation = true;
   }
   if (!record.date || !record.accountId || !record.categoryId || isNaN(record.amount) || record.amount <= 0) { alert("Please fill in date, account, category and a positive amount."); return; }
-  if (editId) { const idx = db.transactions.findIndex((t) => t.id === editId); if (idx !== -1) db.transactions[idx] = record; toast("Transaction updated"); }
-  else { db.transactions.push(record); toast("Transaction added"); }
+  /* Log before saving so the entry and the change persist in one write (3.17). */
+  const txLabel = () => `${fmtMoney(record.amount, accountCurrency(record.accountId))} · ${(getAccount(record.accountId) || {}).name || "?"} · ${categoryDisplayName(getCategory(record.categoryId))}${record.description ? ` · "${record.description}"` : ""} · ${record.date}`;
+  if (editId) {
+    const idx = db.transactions.findIndex((t) => t.id === editId);
+    const was = existingTx || {};
+    const changes = [];
+    if (was.amount !== record.amount) changes.push(`amount ${fmtMoney(was.amount || 0)} → ${fmtMoney(record.amount)}`);
+    if (was.date !== record.date) changes.push(`date ${was.date} → ${record.date}`);
+    if (was.accountId !== record.accountId) changes.push(`account ${(getAccount(was.accountId) || {}).name || "?"} → ${(getAccount(record.accountId) || {}).name || "?"}`);
+    if (was.categoryId !== record.categoryId) changes.push(`category ${categoryDisplayName(getCategory(was.categoryId))} → ${categoryDisplayName(getCategory(record.categoryId))}`);
+    if ((was.description || "") !== record.description) changes.push(`note "${was.description || ""}" → "${record.description}"`);
+    if (idx !== -1) db.transactions[idx] = record;
+    logAction(`Edited ${record.bucket} ${record.type}`, changes.length ? changes.join(" · ") : "no field changed");
+    toast("Transaction updated");
+  } else {
+    db.transactions.push(record);
+    logAction(`Added ${record.bucket} ${record.type}`, txLabel());
+    toast("Transaction added");
+  }
   saveData();
   document.getElementById("txAmount").value = "";
   document.getElementById("txDescription").value = "";
@@ -2458,6 +2555,7 @@ document.getElementById("transferForm").addEventListener("submit", (e) => {
   if (received === null) { alert(`No exchange rate is set between ${accountCurrency(fromId)} and ${accountCurrency(toId)}.\n\nEither set the rate on the Accounts tab, or type the amount received.`); return; }
   db.transactions.push({ id: uid(), type: "expense", date, accountId: fromId, categoryId: ensureTransferCategory("expense", bucket), amount, description, bucket, transferId });
   db.transactions.push({ id: uid(), type: "income", date, accountId: toId, categoryId: ensureTransferCategory("income", bucket), amount: received, description, bucket, transferId });
+  logAction("Transfer between accounts", `${fmtMoney(amount)} · ${from ? from.name : "?"} → ${to ? to.name : "?"} · ${date}`);
   saveData();
   document.getElementById("trAmount").value = "";
   document.getElementById("trReceived").value = ""; document.getElementById("trReceived").dataset.touched = "";
@@ -2474,6 +2572,7 @@ document.getElementById("markTransferTxBtn").addEventListener("click", () => {
     if (!confirm("These two are currently marked as one transfer.\n\nRemove the marking? They'll go back to counting as ordinary income and expense in your Dashboard, budgets, spending chart and Yearly Report. Account balances won't change either way.")) return;
     delete a.transferId; delete b.transferId;
     selectedTxIds.clear();
+    logAction("Removed transfer marking", `${fmtMoney(a.amount)} · now counts as income and expense again`);
     saveData(); renderTransactionsView(); renderDashboard(); renderBusinessView(); renderAccountsView();
     toast("Transfer marking removed");
     return;
@@ -2492,6 +2591,7 @@ document.getElementById("markTransferTxBtn").addEventListener("click", () => {
   const transferId = uid();
   a.transferId = transferId; b.transferId = transferId;
   selectedTxIds.clear();
+  logAction("Marked as transfer", `${fmtMoney(a.amount)} · ${(getAccount(a.accountId) || {}).name || "?"} ↔ ${(getAccount(b.accountId) || {}).name || "?"} · no longer counts as income or expense`);
   saveData(); renderTransactionsView(); renderDashboard(); renderBusinessView(); renderAccountsView();
   toast("Marked as transfer");
 });
@@ -2529,6 +2629,7 @@ function deleteTransaction(id) {
     db.transactions = db.transactions.filter((t) => t.transferId !== tx.transferId);
     selectedTxIds.delete(id);
     if (other) selectedTxIds.delete(other.id);
+    logAction("Deleted transfer", `${fmtMoney(tx.amount, accountCurrency(tx.accountId))} · both halves removed`);
     saveData(); renderTransactionsView(); renderDashboard(); renderBusinessView(); renderAccountsView();
     toast(other ? "Transfer deleted (both halves)" : "Transaction deleted");
     return;
@@ -2536,6 +2637,7 @@ function deleteTransaction(id) {
   if (!confirm("Delete this transaction?")) return;
   db.transactions = db.transactions.filter((t) => t.id !== id);
   selectedTxIds.delete(id);
+  logAction(`Deleted ${tx.bucket} ${tx.type}`, `${fmtMoney(tx.amount, accountCurrency(tx.accountId))} · ${(getAccount(tx.accountId) || {}).name || "?"} · ${categoryDisplayName(getCategory(tx.categoryId))}${tx.description ? ` · "${tx.description}"` : ""} · ${tx.date}`);
   saveData(); renderTransactionsView(); renderDashboard(); renderBusinessView();
   toast("Transaction deleted");
 }
@@ -2609,6 +2711,7 @@ document.getElementById("deleteSelectedTxBtn").addEventListener("click", () => {
   const removeIds = new Set([...selectedTxIds, ...partners.map((t) => t.id)]);
   db.transactions = db.transactions.filter((t) => !removeIds.has(t.id));
   selectedTxIds.clear();
+  logAction("Deleted transactions in bulk", `${removeIds.size} entr${removeIds.size === 1 ? "y" : "ies"} removed`);
   saveData(); renderTransactionsView(); renderDashboard(); renderBusinessView(); renderAccountsView();
   toast(`Deleted ${removeIds.size} transaction${removeIds.size > 1 ? "s" : ""}`);
 });
@@ -2622,6 +2725,7 @@ document.getElementById("moveSelectedTxBtn").addEventListener("click", () => {
   if (!confirm(`Move ${count} selected transaction${count > 1 ? "s" : ""} to "${targetAccount ? targetAccount.name : "this account"}"? Only the linked account changes — the date, type, category, amount, and description stay exactly the same.`)) return;
   db.transactions.forEach((t) => { if (selectedTxIds.has(t.id)) t.accountId = targetId; });
   selectedTxIds.clear();
+  logAction("Moved transactions to another account", `${count} entr${count === 1 ? "y" : "ies"} → ${targetAccount ? targetAccount.name : "?"}`);
   saveData(); renderTransactionsView(); renderDashboard(); renderBusinessView();
   toast(`Moved ${count} transaction${count > 1 ? "s" : ""} to "${targetAccount ? targetAccount.name : "account"}"`);
 });
@@ -2946,9 +3050,11 @@ document.getElementById("catForm").addEventListener("submit", (e) => {
       cat.name = name; cat.color = color; cat.excludeFromTotals = exclude;
       if (groupChanged) { cat.type = type; cat.parentId = parentId; cat.order = nextCategoryOrder(type, parentId, cat.bucket); }
     }
+    logAction("Edited category", `${name}${exclude ? " · marked not counted as income/expense" : ""}`);
     toast("Category updated");
   } else {
     db.categories.push({ id: uid(), name, type, bucket: categoriesLedger, color, parentId, order: nextCategoryOrder(type, parentId, categoriesLedger), excludeFromTotals: exclude });
+    logAction("Added category", `${name} · ${type} · ${categoriesLedger}${exclude ? " · not counted as income/expense" : ""}`);
     toast("Category added");
   }
   saveData();
@@ -2989,8 +3095,11 @@ function deleteCategory(id) {
   if (db.categories.some((c) => c.parentId === id)) { alert("This category has subcategories. Delete or reassign them first."); return; }
   if (db.transactions.some((t) => t.categoryId === id) || db.budgets.some((b) => b.categoryId === id)) { alert("This category is used by existing transactions or budgets and can't be deleted. Reassign or delete those first."); return; }
   if (!confirm("Delete this category?")) return;
+  /* Capture the name before removing it, and log before saving (3.17). */
+  const gone = getCategory(id);
   db.categories = db.categories.filter((c) => c.id !== id);
   selectedCatIds.delete(id);
+  logAction("Deleted category", (gone && gone.name) || id);
   saveData(); renderCategoriesView(); renderTransactionsView();
   toast("Category deleted");
 }
@@ -3098,6 +3207,7 @@ const SHEET_TABS = {
   Transactions: ["id", "type", "date", "accountId", "categoryId", "amount", "description", "isReconciliation", "bucket", "transferId", "ref", "panel", "credits"],
   Budgets: ["id", "categoryId", "month", "amount"],
   Reconciliations: ["id", "accountId", "date", "actualBalance", "computedBefore", "diff"],
+  Logs: ["id", "at", "device", "action", "detail"],
   Settings: ["key", "value"],
 };
 const SHEETS_API = "https://sheets.googleapis.com/v4/spreadsheets";
@@ -3214,6 +3324,9 @@ function coerceTypesFromSheet(raw) {
   const transactions = raw.Transactions.filter((r) => r.id).map((r) => ({ id: r.id, type: r.type, date: r.date, accountId: r.accountId, categoryId: r.categoryId, amount: parseFloat(r.amount) || 0, description: r.description || "", isReconciliation: String(r.isReconciliation).toUpperCase() === "TRUE", bucket: r.bucket || "personal", transferId: r.transferId ? String(r.transferId) : "", ref: r.ref ? String(r.ref) : "", panel: r.panel ? String(r.panel) : "", credits: Number(r.credits) > 0 ? Number(r.credits) : 0 }));
   const budgets = raw.Budgets.filter((r) => r.id).map((r) => ({ id: r.id, categoryId: r.categoryId, month: r.month, amount: parseFloat(r.amount) || 0 }));
   const reconciliations = raw.Reconciliations.filter((r) => r.id).map((r) => ({ id: r.id, accountId: r.accountId, date: r.date, actualBalance: parseFloat(r.actualBalance) || 0, computedBefore: parseFloat(r.computedBefore) || 0, diff: parseFloat(r.diff) || 0 }));
+  /* A sheet with no Logs tab yet yields an empty log rather than an error; the tab is created on the
+     next push by ensureSheetStructure (3.17). */
+  const logs = (raw.Logs || []).filter((r) => r.id).map((r) => ({ id: r.id, at: String(r.at || ""), device: String(r.device || ""), action: String(r.action || ""), detail: String(r.detail || "") })).slice(-LOG_LIMIT);
   const settings = { currency: settingsCurrency, rates: settingsRates, displayCurrencies: settingsDisplay };
   /* Absent rows mean no lock — a Settings tab written before this feature simply loads unlocked. */
   const ph = settingRow("pinHash"), ps = settingRow("pinSalt");
@@ -3222,7 +3335,7 @@ function coerceTypesFromSheet(raw) {
     const rh = settingRow("recoveryHash"), rs = settingRow("recoverySalt");
     if (rh && rs) { settings.recoveryHash = String(rh); settings.recoverySalt = String(rs); }
   }
-  return { categories, accounts, transactions, budgets, reconciliations, settings };
+  return { categories, accounts, transactions, budgets, reconciliations, logs, settings };
 }
 
 function buildRowsForTab(tab) {
@@ -3356,8 +3469,60 @@ function updateSyncUI() {
 
 function renderCloudSyncView() { updateSyncUI(); }
 
+/* ===================== Activity Log (Section 3.17) ===================== */
+function renderLogsView() {
+  const nameEl = document.getElementById("deviceNameInput");
+  if (nameEl && !nameEl.value) {
+    const stored = (() => { try { return localStorage.getItem(DEVICE_KEY) || ""; } catch (e) { return ""; } })();
+    nameEl.value = stored;
+    nameEl.placeholder = stored ? stored : "e.g. PC, iPhone, Office";
+  }
+  const q = (document.getElementById("logSearch").value || "").trim().toLowerCase();
+  const all = (db.logs || []);
+  /* Newest first — the last thing that happened is what you almost always want to see. */
+  const rows = all.slice().reverse().filter((l) => !q ||
+    (l.at + " " + l.device + " " + l.action + " " + l.detail).toLowerCase().includes(q));
+  document.getElementById("logCount").textContent = q
+    ? `${rows.length} of ${all.length} entries`
+    : `${all.length} of ${LOG_LIMIT} entries kept`;
+  const body = document.getElementById("logBody");
+  if (!rows.length) {
+    body.innerHTML = `<tr><td colspan="4" class="empty-state">${all.length ? `Nothing matches "${q}".` : "Nothing recorded yet. Add or change something and it will appear here."}</td></tr>`;
+    return;
+  }
+  body.innerHTML = rows.map((l) => {
+    const when = (l.at || "").replace(" ", "<br><span style='color:var(--text-muted)'>") + (l.at && l.at.includes(" ") ? "</span>" : "");
+    return `<tr><td style="white-space:nowrap;font-size:12px;">${when}</td>` +
+      `<td><span class="account-type-badge">${l.device || "—"}</span></td>` +
+      `<td style="font-weight:600;">${l.action || ""}</td>` +
+      `<td style="color:var(--text-muted);">${l.detail || ""}</td></tr>`;
+  }).join("");
+}
+
+document.getElementById("deviceNameSaveBtn").addEventListener("click", () => {
+  const v = document.getElementById("deviceNameInput").value.trim();
+  if (!v) { alert("Give this device a short name, like PC or iPhone."); return; }
+  setDeviceName(v);
+  logAction("Named this device", `Device name set to "${v}"`);
+  saveData();
+  renderLogsView();
+  toast(`This device is now "${v}"`);
+});
+
+["logSearch"].forEach((id) => document.getElementById(id).addEventListener("input", renderLogsView));
+
+document.getElementById("logClearBtn").addEventListener("click", () => {
+  if (!(db.logs || []).length) { alert("The log is already empty."); return; }
+  if (!confirm(`Clear all ${db.logs.length} log entries?\n\nThis only removes the record of what happened. None of your accounts, transactions, budgets or balances are touched.`)) return;
+  db.logs = [];
+  logAction("Cleared the log", "All earlier entries removed");
+  saveData();
+  renderLogsView();
+  toast("Log cleared");
+});
+
 /* ================= INIT ================= */
-function renderAll() { renderDashboard(); renderAccountsView(); renderTransactionsView(); renderBudgetsView(); renderYearlyView(); renderBusinessView(); renderCategoriesView(); updateSyncUI(); }
+function renderAll() { renderDashboard(); renderAccountsView(); renderTransactionsView(); renderBudgetsView(); renderYearlyView(); renderBusinessView(); renderCategoriesView(); renderLogsView(); updateSyncUI(); }
 
 initCurrencySelect();
 populateAccountSelect(txAccountSelect, false, transactionsLedger);

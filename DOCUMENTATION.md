@@ -96,6 +96,15 @@ Two things about the move that were verified rather than assumed:
 ```
 - A historical log entry, written every time you use "Reconcile" on an account — kept even when `diff` is 0 (no adjustment needed), so you have a record of when you last checked.
 
+### 2.5a Log entry
+```
+{ id, at: "YYYY-MM-DD HH:MM", device, action, detail }
+```
+- `at` — **local** time when it happened, formatted at write time. Stored as text rather than a timestamp so a log line always reads as the clock the user actually saw (Section 3.17).
+- `device` — the name of the device it was done on, e.g. `PC`, `iPhone`.
+- `action` — short verb phrase: `Added expense`, `Deleted transfer`, `Turned on App Lock`.
+- `detail` — the specifics, including before → after values on an edit.
+
 ### 2.6 Settings
 ```
 { currency: <main currency code>, rates: { [code]: <PKR per 1 unit> }, displayCurrencies: [code, …] }
@@ -531,6 +540,27 @@ lockIsSet()       = personal PIN set  OR  usingDefaultPin()
 
 **Deliberate differences in the PC and iPhone copies.** They have no Cloud Sync tab, so the App Lock card sits on the **Accounts** tab instead. They also have no Google Sheet, so all Sheet-specific wording is replaced: the intro says the data lives in this browser and that the device's own lock is the real protection, the overlay's help line points to Reset All Data, and the device-wipe confirmation explains that **Import Backup** is the only way back. The recovery code is therefore the *only* non-destructive route on those copies, which is why it exists.
 
+### 3.17 Activity log
+
+**Why.** This handles real money, so the user wanted a readable record of what changed, when, and where it was done — the ordinary audit question *"when did this entry change, and what was it before?"*
+
+```
+logAction(action, detail)  →  appends { id, at, device, action, detail } to db.logs
+                              then trims to the newest LOG_LIMIT (400) entries
+```
+
+**`logAction` deliberately does not call `saveData()`.** Every call site already saves immediately afterwards as part of the action being logged; saving inside `logAction` would double-write and, because saving schedules a cloud push, would double-push too. The rule is therefore: **log first, then save** — the log entry rides along in the same write as the change it describes.
+
+**Capped at 400 entries**, oldest dropped first. Chosen by the user over 500 to keep the synced sheet small; an uncapped log would add thousands of rows within a year and slow every sync for no benefit.
+
+**Device name is per-device and deliberately NOT synced.** It lives under its own `localStorage` key (`moneyManagerDevice`), *not* in `db.settings`. Had it gone in settings it would have synced, and every device would then have shared one name — which defeats the entire purpose of recording which device an action came from. Set at the top of the Logs tab; defaults to `This device` until named.
+
+**No IP address, by design.** The user originally asked for the public IP of whoever made a change. A browser cannot see its own public IP, so this would require calling an outside service on every load — breaking offline use, telling a third party the app is in use, and adding a dependency that could vanish. A device name the user sets once also answers the real question better, since a home IP changes constantly. Explained and accepted.
+
+**What is logged.** Every action that changes money or structure: transactions (add, edit with before → after, delete, bulk delete, bulk move account, mark/unmark transfer), all three kinds of transfer, accounts (add, delete, exclude toggle, reconcile), categories (add, edit, delete, exclude toggle), budgets (set, copy, undo), exchange rates and currency settings, App Lock changes, and import/reset.
+
+**Stated plainly to the user: this is a record, not tamper-proof evidence.** It lives in the same store as the data, so anyone able to change the data could change the log. It answers "what happened and when" reliably; it is not proof against a determined person. Real tamper-proof logging needs a server the user controls, which this app deliberately does not have.
+
 ---
 
 ## 4. Business Rules / Invariants (must hold at all times)
@@ -557,6 +587,7 @@ Your Google Sheet has one tab per entity. The exact columns, in order, that get 
 | `Transactions` | `id, type, date, accountId, categoryId, amount, description, isReconciliation, bucket, transferId, ref, panel, credits` |
 | `Budgets` | `id, categoryId, month, amount` |
 | `Reconciliations` | `id, accountId, date, actualBalance, computedBefore, diff` |
+| `Logs` | `id, at, device, action, detail` — capped at the newest 400 rows (Section 3.17) |
 | `Settings` | `key, value` — now **multiple rows**: `currency`, `rates` (JSON), `displayCurrencies` (comma-separated). Previously only a single `currency` row was written or read. |
 
 How it works:
@@ -618,6 +649,17 @@ When a new field is added to categories, accounts, or transactions (like `parent
 **8.15 Net This Month stat** — add income and expense transactions in the same month, confirm "Net This Month" equals Income − Expense exactly; switch months and confirm it recalculates per month; confirm the Business tab's 4-card stat grid is unaffected (still `repeat(4, 1fr)` on desktop) and its "Net Profit" figure is untouched.
 
 **8.16 Total Balance moved to Accounts** — confirm the Dashboard has exactly 4 stat cards (Income, Expenses, Net This Month, Savings Rate) and no Total Balance card anywhere on it; confirm the Accounts tab's "Your Accounts" card shows "Total Balance (Personal)" matching the sum of personal accounts' `accountCurrentBalance`, and that it excludes any business accounts even though the account list below it shows both; confirm switching Dashboard months does not affect the Accounts tab figure at all (it's not month-scoped); confirm the Business tab's "Total Business Balance" is untouched.
+
+**8.28 Activity log (Section 3.17)** — the log must never become the thing that breaks the app it records:
+- Add, edit and delete a transaction and confirm one entry appears for each, newest first, with the local date and time, the device name, and — on the edit — the before → after value.
+- Confirm the device name is **not** synced: set a different name on two devices, sync both, and confirm each keeps its own name while both see all the entries.
+- Confirm a device with no name set shows `This device` rather than blank.
+- **Cap**: write more than 400 entries and confirm the count stops at 400 and the *oldest* are dropped, not the newest.
+- Confirm `logAction` does not itself save — grep it for `saveData` — and that every call site saves after logging, so a logged change and its entry persist together.
+- **Round-trip (8.7)**: sync and confirm log rows survive with all five fields intact, and that a sheet with **no** Logs tab simply yields an empty log rather than erroring (the tab is created on next push).
+- Confirm no money figure anywhere changes as a result of logging being switched on — the log is additive and must not touch a single calculation.
+- Confirm Import Backup and Reset are themselves logged, and that a log entry is never created for merely *viewing* a tab.
+- Confirm clearing the log asks for confirmation and leaves all financial data untouched.
 
 **8.27 App lock (Section 3.16)** — the failure that matters most is locking the owner out of their own data, so test recovery before anything else:
 - **Recovery first**: set a PIN, then delete the `pinHash` row from the Settings sheet (or the equivalent local value), reload, and confirm the app opens unlocked and a new PIN can be set. This must always work.
