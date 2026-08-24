@@ -137,10 +137,18 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
 .lock-box .primary-btn { width: 100%; }
 .lock-msg { min-height: 18px; margin-top: 10px; font-size: 13px; color: var(--expense); font-weight: 600; }
 .lock-help { margin-top: 14px; font-size: 11px; color: var(--text-muted); line-height: 1.5; }
-/* Conversion table: readable at a glance, not squeezed into a hint line. */
-.currency-table td, .currency-table th { font-size: 15px; padding: 10px 12px; }
-.currency-table td:first-child { font-weight: 700; }
-.currency-table td.amount { font-weight: 600; font-variant-numeric: tabular-nums; }
+/* Conversion tables: readable but light. Colour carries the distinction between currencies, so the
+   type itself stays quiet — an earlier all-bold-black version read as a heavy slab. */
+.currency-table { border-collapse: separate; border-spacing: 0; }
+.currency-table th { font-size: 10px; letter-spacing: .07em; text-transform: uppercase; font-weight: 700; padding: 6px 14px 8px; border-bottom: 1px solid var(--border); }
+.currency-table td { font-size: 13.5px; padding: 9px 14px; border-bottom: 1px solid rgba(0,0,0,.045); }
+.currency-table tr:last-child td { border-bottom: none; }
+.currency-table tbody tr:hover td { background: rgba(79,70,229,.035); }
+.currency-table td.amount { font-weight: 500; font-variant-numeric: tabular-nums; }
+/* The account's own currency — the one figure that is a fact, not an estimate. */
+.currency-table td.amount.native { font-weight: 700; color: var(--text); }
+.currency-table td.acc-name { font-weight: 600; color: var(--text); white-space: nowrap; }
+.cur-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
 #filterSearch { flex: 1; min-width: 180px; }
 .table-wrap { overflow-x: auto; }
 .checkbox-col { width: 34px; }
@@ -1006,10 +1014,13 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
 const STORAGE_KEY = "moneyManagerData";
 const CLOUD_CONFIG_KEY = "moneyManagerCloudConfig";
 
+/* Each currency carries its own colour so a wide conversion table reads as distinct columns rather
+   than a block of black text. Chosen for contrast on the light card background. */
 const CURRENCIES = [
-  { code: "PKR", symbol: "Rs" }, { code: "USD", symbol: "$" }, { code: "AED", symbol: "AED" },
-  { code: "SAR", symbol: "SAR" }, { code: "QAR", symbol: "QAR" }, { code: "GBP", symbol: "£" },
-  { code: "EUR", symbol: "€" }, { code: "INR", symbol: "₹" },
+  { code: "PKR", symbol: "Rs",  color: "#4f46e5" }, { code: "USD", symbol: "$",   color: "#15803d" },
+  { code: "AED", symbol: "AED", color: "#0f766e" }, { code: "SAR", symbol: "SAR", color: "#b45309" },
+  { code: "QAR", symbol: "QAR", color: "#be123c" }, { code: "GBP", symbol: "£",   color: "#7e22ce" },
+  { code: "EUR", symbol: "€",   color: "#1d4ed8" }, { code: "INR", symbol: "₹",   color: "#0e7490" },
 ];
 const ACCOUNT_TYPES = [
   { value: "bank", label: "Bank Account" }, { value: "cash", label: "Cash" },
@@ -1419,6 +1430,7 @@ document.getElementById("pinRemoveBtn").addEventListener("click", async () => {
    need no conversion; only sums that span accounts do. */
 function mainCurrency() { return (db.settings && db.settings.currency) || "PKR"; }
 function currencySymbolFor(code) { const c = CURRENCIES.find((c) => c.code === code); return c ? c.symbol : (code || ""); }
+function currencyColorFor(code) { const c = CURRENCIES.find((c) => c.code === code); return c && c.color ? c.color : "#6b7280"; }
 function currencySymbol() { return currencySymbolFor(mainCurrency()); }
 function accountCurrency(accountId) { const a = getAccount(accountId); return (a && a.currency) || mainCurrency(); }
 /* Rates are always "how many PKR is 1 unit of this currency", PKR fixed at 1. Anchoring to PKR
@@ -1461,7 +1473,11 @@ function renderCurrencyTable(cardId, bodyId, income, expense, net) {
     const i = convertAmount(income, main, code);
     if (i === null) return "";
     const e = convertAmount(expense, main, code), n = convertAmount(net, main, code);
-    return `<tr><td>${code}</td><td class="amount income">${fmtMoney(i, code)}</td>` +
+    /* Currency colour on the label only. The amounts keep green/red, which carries real meaning
+       here (money in vs money out) and shouldn't be overridden by a decorative colour. */
+    return `<tr><td class="acc-name" style="color:${currencyColorFor(code)}">` +
+      `<span class="cur-dot" style="background:${currencyColorFor(code)}"></span>${code}</td>` +
+      `<td class="amount income">${fmtMoney(i, code)}</td>` +
       `<td class="amount expense">${fmtMoney(e, code)}</td>` +
       `<td class="amount ${n < 0 ? "expense" : "income"}">${fmtMoney(n, code)}</td></tr>`;
   }).filter(Boolean).join("");
@@ -1481,19 +1497,23 @@ function renderAccountBreakdown() {
   if (!extra.length || !db.accounts.length) { card.style.display = "none"; return; }
   const cols = [main, ...extra];
   card.style.display = "";
-  head.innerHTML = `<th>Account</th>` + cols.map((c) => `<th class="right">${c}</th>`).join("");
+  head.innerHTML = `<th>Account</th>` + cols.map((c) =>
+    `<th class="right" style="color:${currencyColorFor(c)}"><span class="cur-dot" style="background:${currencyColorFor(c)}"></span>${c}</th>`).join("");
   body.innerHTML = db.accounts.map((a) => {
     const own = a.currency || main;
     const bal = accountCurrentBalance(a.id);
     const badges = `<span class="account-type-badge">${(a.bucket || "personal") === "business" ? "Business" : "Personal"}</span>` +
       (a.excludeFromBalance ? `<span class="account-type-badge" title="Kept out of Total Balance, but this is still a real balance.">not in total</span>` : "");
     const cells = cols.map((code) => {
-      if (code === own) return `<td class="amount"><strong>${fmtMoney(bal, own)}</strong></td>`;
+      /* The native figure is a fact, so it stays neutral and strong; converted ones are tinted with
+         the currency's own colour, which keeps a wide table legible without shouting. */
+      if (code === own) return `<td class="amount native">${fmtMoney(bal, own)}</td>`;
       const v = convertAmount(bal, own, code);
       /* No rate: show a dash. A guessed number here would look authoritative and be wrong. */
-      return v === null ? `<td class="amount" title="No exchange rate set for ${code}">—</td>` : `<td class="amount">${fmtMoney(v, code)}</td>`;
+      if (v === null) return `<td class="amount" title="No exchange rate set for ${code}" style="color:var(--text-muted)">—</td>`;
+      return `<td class="amount" style="color:${currencyColorFor(code)}">${fmtMoney(v, code)}</td>`;
     }).join("");
-    return `<tr><td><span class="cat-dot" style="background:${a.color}"></span> ${a.name} ${badges}</td>${cells}</tr>`;
+    return `<tr><td class="acc-name"><span class="cat-dot" style="background:${a.color}"></span> ${a.name} ${badges}</td>${cells}</tr>`;
   }).join("");
 }
 
