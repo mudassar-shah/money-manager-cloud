@@ -1358,6 +1358,18 @@ function hideLockScreen() {
 /* Called before any view renders, so nothing can flash behind the overlay. */
 function applyLockOnLoad() { if (lockIsSet()) showLockScreen(); else hideLockScreen(); }
 
+/* After a sync, re-locking an app the user is actively using is wrong: every "Sync Now" threw up
+   the PIN screen, and the confirmation toast fired behind that overlay and expired while they were
+   typing. The lock's real purpose here is narrow — a PIN may arrive FROM the Sheet, and that must be
+   honoured — so act only when the lock actually changed across the sync.
+
+   It compares WHICH lock, not merely whether one exists: on the Cloud copy DEFAULT_PIN is set, so
+   lockIsSet() is permanently true and a bare true/false test could never fire — a personal PIN
+   arriving from another device would silently fail to lock this one. Includes the hash, so swapping
+   one personal PIN for a different one counts as a change too. */
+function lockSignature() { return personalPinSet() ? "personal:" + db.settings.pinHash : (lockIsSet() ? "default" : "none"); }
+function applyLockIfLockChanged(before) { if (lockSignature() !== before) applyLockOnLoad(); }
+
 async function tryUnlock() {
   const pin = document.getElementById("lockPin").value.trim();
   const msg = document.getElementById("lockMsg");
@@ -3276,8 +3288,9 @@ async function onTokenResponse(resp) {
     await ensureSheetStructure();
     /* No "use the Sheet or use this device?" question any more: it was all-or-nothing, gave no hint
        of how many records were at stake, and either answer threw away real data (Section 5.1). */
+    const hadLock = lockSignature();
     const stats = await syncWithSheet();
-    renderLockSettings(); applyLockOnLoad(); renderAll();
+    renderLockSettings(); applyLockIfLockChanged(hadLock); renderAll();
     toast(mergeSummary(stats));
   } catch (err) {
     console.error(err);
@@ -3621,8 +3634,9 @@ document.getElementById("syncNowBtn").addEventListener("click", async () => {
   try {
     /* Was `db = sheetData` — a download-only that silently destroyed anything entered on this device
        since the last push. It now merges both sides and sends the result up (Section 5.1). */
+    const hadLock = lockSignature();
     const stats = await syncWithSheet();
-    renderLockSettings(); applyLockOnLoad(); renderAll();
+    renderLockSettings(); applyLockIfLockChanged(hadLock); renderAll();
     toast(mergeSummary(stats));
   } catch (err) { console.error(err); lastSyncError = err.message; alert("Sync failed: " + err.message); }
   cloudBusy = false; updateSyncUI();
@@ -3680,17 +3694,33 @@ function updateSyncUI() {
 
   /* Nothing in the old design told you that work was sitting only on this device — which is what
      made the loss invisible until it had already happened (Section 5.1). */
-  const pending = cloudBusy ? null : pendingChangeCount();
-  if (pending) {
-    detailText.textContent += (detailText.textContent ? " — " : "") + pending + (pending === 1 ? " change" : " changes") + " not yet in the Sheet.";
-    if (!accessToken) badge.className = "sync-badge err";
-  }
-
+  /* This card is the only window into whether syncing is working, so no part of it may be able to
+     break the rest, and a failure must be VISIBLE — a console error is unreachable on a phone.
+     Rendered before the pending count for the same reason: the more important line goes first. */
   const resultEl = document.getElementById("syncLastResult");
+  let extra = "";
   if (resultEl) {
-    const text = lastSyncResultText();
+    let text = "";
+    try { text = lastSyncResultText(); }
+    catch (e) { console.error("lastSyncResultText failed", e); text = "Last sync: could not be read — " + e.message; }
     resultEl.textContent = text;
     resultEl.style.display = text ? "" : "none";
+  }
+
+  try {
+    const pending = cloudBusy ? null : pendingChangeCount();
+    if (pending) {
+      detailText.textContent += (detailText.textContent ? " — " : "") + pending + (pending === 1 ? " change" : " changes") + " not yet in the Sheet.";
+      if (!accessToken) badge.className = "sync-badge err";
+    }
+  } catch (e) {
+    console.error("pendingChangeCount failed", e);
+    extra = "Unsynced count unavailable — " + e.message;
+  }
+
+  if (extra && resultEl) {
+    resultEl.textContent = (resultEl.textContent ? resultEl.textContent + " · " : "") + extra;
+    resultEl.style.display = "";
   }
 }
 
