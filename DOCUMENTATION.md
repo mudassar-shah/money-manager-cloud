@@ -444,6 +444,15 @@ Rates are **entered manually**, with an optional "get latest" button. Deliberate
 
 **Cross-currency transfers (3.10, 3.14).** When the two accounts share a currency the form is unchanged — one amount. When they differ, a **second amount box** appears: what left, and what actually arrived. The user types the received figure from their bank, because a bank's real rate and fees never match a published rate; the saved rate only pre-fills it as a suggestion. The two halves therefore hold **different amounts**, which is why `Mark as Transfer` no longer requires equal amounts when the accounts' currencies differ. No fee transaction is derived — whether the spread is a "loss" depends on which rate you consider true, so that judgement is left to the user.
 
+**Per-account breakdown.** The totals answered "how much do I have altogether in dollars", but not "how much is in *this* account in dollars". An **Each Account in Other Currencies** card on the Accounts tab closes that: one row per account, one column per currency (main currency first, then each chosen display currency).
+
+- The cell in an account's **own** currency is shown **bold** — that figure is a fact. Every other cell is an estimate derived from a manually-set rate, and the distinction matters.
+- Works in either direction: an AED account shows AED bold and PKR converted, a PKR account the reverse.
+- **Business accounts are included and labelled.** This card answers "where is my money", not "what is my net worth", so mixing ledgers in one list is correct here and does not breach Section 4 rule 2 — no *figure* combines the two.
+- Accounts flagged `excludeFromBalance` (3.13) **are listed**, marked `not in total`. Their balance is real even though it is kept out of Total Balance; hiding it would lose information the user deliberately records.
+- A missing rate renders `—` for that cell, never a guessed number (3.15).
+- The whole card hides itself when no display currencies are chosen.
+
 **Conversion display — a table, not a hint line.** The first attempt put the conversions in the existing 11px grey `stat-sub` beneath each figure. With four currencies it wrapped into an unreadable smear and the user rejected it outright: *"too much small, I'm not able to actually [see] what the actual value is, and not presentable."* A feature whose entire purpose is reading a number must render that number legibly.
 
 Replaced with a dedicated card — **"This Month in Other Currencies"** — holding a real table: one row per currency, columns Income / Expenses / Net, at **15px** with income green and expenses red, matching every other figure in the app. The card hides itself entirely when no display currencies are chosen, so users who never leave one currency see nothing. `renderCurrencyTable(cardId, bodyId, income, expense, net)` serves all three tabs, so they cannot drift apart.
@@ -633,6 +642,7 @@ When a new field is added to categories, accounts, or transactions (like `parent
 - **Cross-currency transfer**: PKR → AED with different sent/received amounts; confirm each account moves by its own amount, that both halves share one `transferId`, that deleting either removes both and restores both balances, and that no income/expense figure moves.
 - Confirm the transfer form shows **one** amount box for same-currency accounts and **two** when they differ, and that `Mark as Transfer` accepts unequal amounts only when the currencies differ.
 - Confirm the "also worth" lines on Dashboard and Accounts match `total × rate`, and that Business conversions stay separate from personal.
+- **Per-account breakdown card**: confirm one row per account and one column per chosen currency; that each account's own-currency cell is bold and equals `accountCurrentBalance` exactly; that converted cells equal `balance × rate`; that an AED account shows AED bold and PKR converted; that business accounts appear and are labelled; that an `excludeFromBalance` account appears marked `not in total`; that a currency with no rate renders `—`; and that the card disappears when no display currencies are ticked.
 
 **8.25 Business ↔ Personal transfers (Section 3.14)** — the risk is leaking a figure across the ledger boundary, so test both sides' totals explicitly:
 - Move an amount from a business account to a personal one. Confirm the business account's balance falls by exactly that amount and the personal account's rises by exactly that amount.

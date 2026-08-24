@@ -467,6 +467,17 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
         <div id="accountListWrap" class="account-list-wrap"></div>
       </div>
 
+      <div class="card" id="accBreakdownCard" style="display:none;">
+        <h2>Each Account in Other Currencies</h2>
+        <p class="hint">The <strong>bold</strong> figure is the account's real balance in its own currency. The others are converted using your saved rates, so they are estimates.</p>
+        <div class="table-wrap">
+          <table class="tx-table currency-table">
+            <thead><tr id="accBreakdownHead"></tr></thead>
+            <tbody id="accBreakdownBody"></tbody>
+          </table>
+        </div>
+      </div>
+
       <div class="card">
         <div class="view-header" style="margin-bottom:14px;">
           <h2 style="margin:0;">Monthly Carry-Forward</h2>
@@ -1457,6 +1468,35 @@ function renderCurrencyTable(cardId, bodyId, income, expense, net) {
   card.style.display = rows ? "" : "none";
   body.innerHTML = rows;
 }
+/* One row per account, one column per currency — answers "how much is in THIS account in dollars",
+   which the totals could not (Section 3.15). An account's own-currency cell is bold because it is a
+   fact; the rest are estimates from a manually-set rate. */
+function renderAccountBreakdown() {
+  const card = document.getElementById("accBreakdownCard");
+  const head = document.getElementById("accBreakdownHead");
+  const body = document.getElementById("accBreakdownBody");
+  if (!card || !head || !body) return;
+  const main = mainCurrency();
+  const extra = ((db.settings && db.settings.displayCurrencies) || []).filter((c) => c !== main);
+  if (!extra.length || !db.accounts.length) { card.style.display = "none"; return; }
+  const cols = [main, ...extra];
+  card.style.display = "";
+  head.innerHTML = `<th>Account</th>` + cols.map((c) => `<th class="right">${c}</th>`).join("");
+  body.innerHTML = db.accounts.map((a) => {
+    const own = a.currency || main;
+    const bal = accountCurrentBalance(a.id);
+    const badges = `<span class="account-type-badge">${(a.bucket || "personal") === "business" ? "Business" : "Personal"}</span>` +
+      (a.excludeFromBalance ? `<span class="account-type-badge" title="Kept out of Total Balance, but this is still a real balance.">not in total</span>` : "");
+    const cells = cols.map((code) => {
+      if (code === own) return `<td class="amount"><strong>${fmtMoney(bal, own)}</strong></td>`;
+      const v = convertAmount(bal, own, code);
+      /* No rate: show a dash. A guessed number here would look authoritative and be wrong. */
+      return v === null ? `<td class="amount" title="No exchange rate set for ${code}">—</td>` : `<td class="amount">${fmtMoney(v, code)}</td>`;
+    }).join("");
+    return `<tr><td><span class="cat-dot" style="background:${a.color}"></span> ${a.name} ${badges}</td>${cells}</tr>`;
+  }).join("");
+}
+
 /* "Also worth" line: the same total expressed in the user's chosen currencies. */
 function conversionLine(amountInMain) {
   const chosen = (db.settings && db.settings.displayCurrencies) || [];
@@ -1963,6 +2003,7 @@ function renderAccountsView() {
   }).filter(Boolean).join("");
   document.getElementById("accountsTotalConverted").innerHTML = `<div>All time</div>${lines}`;
   renderCurrencySettings();
+  renderAccountBreakdown();
   renderMissingRateWarning();
   renderOutstandingLoans();
   /* Repopulating wipes the selection, so preserve it; default To to the opposite ledger's first account. */
