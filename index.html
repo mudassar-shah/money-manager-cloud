@@ -995,6 +995,9 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
           <div>
             <div id="syncStatusText" style="font-weight:600;">Not connected</div>
             <div id="syncDetailText" class="hint" style="margin:2px 0 0;">—</div>
+            <!-- What the last sync actually did. The toast that also reports this clears after 2.4s,
+                 right when the user is watching Google's sign-in window rather than the app. -->
+            <div id="syncLastResult" class="hint" style="margin:4px 0 0; font-weight:600; display:none;"></div>
           </div>
         </div>
         <div class="form-row" style="margin-top:16px;">
@@ -3226,6 +3229,24 @@ let tokenClient = null;
 let gisReady = false;
 let lastSyncedAt = null;
 let lastSyncError = null;
+/* Persisted so "what did the last sync do?" can still be answered after a reload — a figure meant to
+   be checked later is useless if it disappears with the page (Section 5.1). */
+const LAST_SYNC_KEY = "mm_last_sync";
+let lastSyncStats = null;
+try {
+  const savedSync = JSON.parse(localStorage.getItem(LAST_SYNC_KEY) || "null");
+  if (savedSync && savedSync.at) { lastSyncedAt = new Date(savedSync.at); lastSyncStats = savedSync.stats || null; }
+} catch (e) {}
+
+function lastSyncResultText() {
+  if (!lastSyncStats) return "";
+  const s = lastSyncStats, bits = [];
+  if (s.fromDevice) bits.push(`${s.fromDevice} ${s.fromDevice === 1 ? "entry" : "entries"} added from this device`);
+  if (s.fromSheet) bits.push(`${s.fromSheet} added from the Sheet`);
+  if (s.deleted) bits.push(`${s.deleted} deleted`);
+  if (s.conflicts) bits.push(`${s.conflicts} kept from this device (edited in both places)`);
+  return "Last sync: " + (bits.length ? bits.join(", ") : "nothing to change — both sides already matched");
+}
 let cloudPushTimer = null;
 let cloudBusy = false;
 
@@ -3479,7 +3500,11 @@ function mergeSummary(stats) {
 async function syncWithSheet() {
   const sheetData = coerceTypesFromSheet(await readAllFromSheet());
   ensureCurrencies(sheetData);
-  seedBusinessCategories(sheetData);
+  /* seedBusinessCategories is deliberately NOT called on the pulled copy. It mints brand-new ids
+     (uid()) whenever a dataset has no business categories, so seeding here would present 8 invented
+     records to the merge as "added on another device" — and a device that already had its own 8
+     would end up with 16 duplicates. It runs once on the merged result below, where the "do any
+     already exist?" test is answered against the combined data. */
   repairOrphanedParents(sheetData);
   repairReconciliationBuckets(sheetData);
   ensureCategoryOrder(sheetData);
@@ -3498,6 +3523,7 @@ async function syncWithSheet() {
   /* Re-run the repairs on the combined set: a parent kept on one side with its child kept on the
      other, or two independently-assigned category orders, only meet here. */
   ensureCurrencies(db);
+  seedBusinessCategories(db);
   repairOrphanedParents(db);
   repairReconciliationBuckets(db);
   ensureCategoryOrder(db);
@@ -3506,6 +3532,8 @@ async function syncWithSheet() {
   saveSnapshot(db);
   lastSyncedAt = new Date();
   lastSyncError = null;
+  lastSyncStats = stats;
+  try { localStorage.setItem(LAST_SYNC_KEY, JSON.stringify({ at: lastSyncedAt.toISOString(), stats })); } catch (e) {}
   return stats;
 }
 
@@ -3656,6 +3684,13 @@ function updateSyncUI() {
   if (pending) {
     detailText.textContent += (detailText.textContent ? " — " : "") + pending + (pending === 1 ? " change" : " changes") + " not yet in the Sheet.";
     if (!accessToken) badge.className = "sync-badge err";
+  }
+
+  const resultEl = document.getElementById("syncLastResult");
+  if (resultEl) {
+    const text = lastSyncResultText();
+    resultEl.textContent = text;
+    resultEl.style.display = text ? "" : "none";
   }
 }
 
