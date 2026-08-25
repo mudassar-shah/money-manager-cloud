@@ -231,6 +231,21 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
 
 <!-- App Lock overlay (Section 3.16). Rendered first and shown before any view draws, so no balance
      can flash on screen behind it. Hidden by default; shown only when a PIN is set. -->
+<!-- Asked at first load, BEFORE anything can be written to this device (Section 3.18). Sign-in would
+     be too late: entries added before signing in would already be on disk. -->
+<div id="trustScreen" class="lock-screen" style="display:none;">
+  <div class="lock-box">
+    <div class="lock-mark">₨</div>
+    <h2>Is this your own device?</h2>
+    <p class="lock-sub" style="margin-bottom:16px;">Your records are kept in your Google Sheet. This only decides whether a copy is also saved on <em>this</em> device.</p>
+    <button type="button" id="trustNoBtn" class="primary-btn">No — don't leave anything here</button>
+    <p class="lock-sub" style="margin:8px 0 16px;font-size:13px;">Nothing is saved on this device. Close the tab and nothing remains. Needs internet.</p>
+    <button type="button" id="trustYesBtn" class="ghost-btn small" style="width:100%;background:transparent;color:var(--text-muted);border-color:var(--border);">Yes — keep my data on this device</button>
+    <p class="lock-sub" style="margin:8px 0 0;font-size:13px;">Saves a copy here so the app works without internet. Choose this only on a phone or computer that is yours.</p>
+    <div class="lock-help">You can change this later: the Cloud Sync tab has an <strong>Erase from this device</strong> button, and erasing never touches your Google Sheet.</div>
+  </div>
+</div>
+
 <div id="lockScreen" class="lock-screen" style="display:none;">
   <div class="lock-box">
     <div class="lock-mark">₨</div>
@@ -1006,6 +1021,16 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
           <button id="disconnectBtn" class="ghost-btn danger" type="button">Disconnect</button>
         </div>
       </div>
+
+      <!-- Trust is revocable: replacing a laptop, or handing an old phone on (Section 3.18). -->
+      <div class="card" style="margin-top:16px;">
+        <h2>Data On This Device</h2>
+        <p class="hint" id="deviceStorageState">—</p>
+        <p class="hint">Erasing removes this device's copy only. <strong>Your Google Sheet is not touched</strong> — sign in again on this or any device and everything comes back.</p>
+        <div class="form-row" style="margin-top:12px;">
+          <button id="eraseDeviceBtn" class="ghost-btn danger" type="button">Erase from this device</button>
+        </div>
+      </div>
     </section>
 
     <!-- ACTIVITY LOG -->
@@ -1058,11 +1083,65 @@ const STORAGE_KEY = "moneyManagerData";
 const DEVICE_KEY = "moneyManagerDevice";
 const LOG_LIMIT = 400;
 
+/* ===================== Trusted vs private devices (Section 3.18) =====================
+   Signing in used to write the whole ledger into whatever browser was being used and leave it there
+   — the feature on your own phone, a data leak on a borrowed laptop. A device is therefore PRIVATE
+   until explicitly trusted: in private mode nothing at all is written to disk, and everything is
+   gone when the tab closes. Every device-bound key goes through these three functions; no figure,
+   formula or sync path behaves differently between the two modes. */
+const TRUST_KEY = "moneyManagerTrust";
+const DEVICE_KEYS = [STORAGE_KEY, DEVICE_KEY, "moneyManagerCloudSnapshot", "mm_last_sync", "moneyManagerCloudConfig"];
+const memStore = {};
+let privateMode = (function () {
+  try {
+    if (localStorage.getItem(TRUST_KEY) === "yes") return false;
+    /* Migration: a device already holding data predates this feature and its owner has plainly
+       accepted data being there. Flipping it to memory-only would look exactly like the sync data
+       loss of Section 5.1 — the one thing this app has already put the user through once. */
+    if (localStorage.getItem(STORAGE_KEY)) return false;
+    return true;
+  } catch (e) { return true; }
+})();
+/* True only when the choice has never been made on this device, so the question is asked once. */
+let trustUnanswered = privateMode;
+
+function storeGet(k) {
+  if (privateMode) return Object.prototype.hasOwnProperty.call(memStore, k) ? memStore[k] : null;
+  try { return localStorage.getItem(k); } catch (e) { return null; }
+}
+function storeSet(k, v) {
+  if (privateMode) { memStore[k] = String(v); return; }
+  try { localStorage.setItem(k, v); } catch (e) { console.error("Could not save to this device", e); }
+}
+function storeRemove(k) {
+  if (privateMode) { delete memStore[k]; return; }
+  try { localStorage.removeItem(k); } catch (e) {}
+}
+
+/* Trusting a device must carry across whatever is already in memory, otherwise the work done between
+   opening the app and answering the question would be dropped at the moment of saying "keep it". */
+function trustThisDevice() {
+  privateMode = false; trustUnanswered = false;
+  try { localStorage.setItem(TRUST_KEY, "yes"); } catch (e) {}
+  Object.keys(memStore).forEach((k) => { try { localStorage.setItem(k, memStore[k]); } catch (e) {} });
+  saveLocalOnly();
+}
+/* A "no" is deliberately NOT recorded: writing a preference to a borrowed device is itself leaving a
+   trace, and being asked again on such a device is the right outcome, not an annoyance. */
+function keepThisDevicePrivate() { trustUnanswered = false; }
+
+/* Wipes every device-bound key. The Sheet is untouched, so signing in again restores everything via
+   the new-device adoption path (Section 5.1). Callers must deal with unsynced work FIRST. */
+function eraseThisDevice() {
+  DEVICE_KEYS.concat([TRUST_KEY]).forEach((k) => { try { localStorage.removeItem(k); } catch (e) {} });
+  Object.keys(memStore).forEach((k) => delete memStore[k]);
+}
+
 function deviceName() {
-  try { return localStorage.getItem(DEVICE_KEY) || "This device"; } catch (e) { return "This device"; }
+  return storeGet(DEVICE_KEY) || "This device";
 }
 function setDeviceName(name) {
-  try { localStorage.setItem(DEVICE_KEY, (name || "").trim().slice(0, 24)); } catch (e) {}
+  storeSet(DEVICE_KEY, (name || "").trim().slice(0, 24));
 }
 function logStamp() {
   const d = new Date(), p = (n) => String(n).padStart(2, "0");
@@ -1135,7 +1214,7 @@ function fiscalYearLabel(fyStartMonth) {
 let db = loadData();
 
 function loadData() {
-  const raw = localStorage.getItem(STORAGE_KEY);
+  const raw = storeGet(STORAGE_KEY);
   let data;
   if (raw) { try { data = JSON.parse(raw); } catch (e) { console.error("Corrupt data, reinitializing", e); } }
   if (!data) {
@@ -1259,10 +1338,10 @@ function moveCategory(id, direction) {
 }
 
 function saveData() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
+  storeSet(STORAGE_KEY, JSON.stringify(db));
   scheduleCloudPush();
 }
-function saveLocalOnly() { localStorage.setItem(STORAGE_KEY, JSON.stringify(db)); }
+function saveLocalOnly() { storeSet(STORAGE_KEY, JSON.stringify(db)); }
 
 /* ===== App Lock (Section 3.16) =====
    A privacy deterrent, not security: the check runs in the browser, so anyone technical can bypass
@@ -1424,7 +1503,7 @@ document.getElementById("lockWipeBtn").addEventListener("click", () => {
     "Continue?");
   if (!ok) return;
   if (!confirm("Last check: have you already deleted the pinHash row from the Settings tab of your Google Sheet?\n\nIf not, press Cancel — otherwise the PIN will simply come back when the app re-syncs.")) return;
-  try { localStorage.removeItem(STORAGE_KEY); } catch (e) {}
+  storeRemove(STORAGE_KEY);
   /* Critical: this path deliberately starts blank and pulls everything back down from the Sheet.
      A surviving snapshot would make the merge read every record as "deleted on this device" and
      erase the Sheet instead of restoring from it (Section 5.1). */
@@ -1725,7 +1804,7 @@ document.getElementById("importFile").addEventListener("change", (e) => {
 document.getElementById("resetDataBtn").addEventListener("click", () => {
   const confirmText = prompt('This permanently deletes every account, transaction, budget, and category on this device (and pushes an empty state to your connected Google Sheet, if any) and cannot be undone.\n\nExport a backup first if you want to keep a copy.\n\nType DELETE to confirm:');
   if (confirmText !== "DELETE") { if (confirmText !== null) alert("Reset cancelled — you must type DELETE exactly to confirm."); return; }
-  localStorage.removeItem(STORAGE_KEY);
+  storeRemove(STORAGE_KEY);
   db = loadData();
   saveData();
   renderAll();
@@ -3235,7 +3314,7 @@ const SHEET_TABS = {
 };
 const SHEETS_API = "https://sheets.googleapis.com/v4/spreadsheets";
 
-let cloudConfig = JSON.parse(localStorage.getItem(CLOUD_CONFIG_KEY) || "null");
+let cloudConfig = JSON.parse(storeGet(CLOUD_CONFIG_KEY) || "null");
 let accessToken = null;
 let tokenClient = null;
 let gisReady = false;
@@ -3246,7 +3325,7 @@ let lastSyncError = null;
 const LAST_SYNC_KEY = "mm_last_sync";
 let lastSyncStats = null;
 try {
-  const savedSync = JSON.parse(localStorage.getItem(LAST_SYNC_KEY) || "null");
+  const savedSync = JSON.parse(storeGet(LAST_SYNC_KEY) || "null");
   if (savedSync && savedSync.at) { lastSyncedAt = new Date(savedSync.at); lastSyncStats = savedSync.stats || null; }
 } catch (e) {}
 
@@ -3379,7 +3458,7 @@ const MERGE_LISTS = ["categories", "accounts", "transactions", "budgets", "recon
 const MERGE_TAB = { categories: "Categories", accounts: "Accounts", transactions: "Transactions", budgets: "Budgets", reconciliations: "Reconciliations" };
 
 function loadSnapshot() {
-  try { const raw = localStorage.getItem(CLOUD_SNAPSHOT_KEY); return raw ? JSON.parse(raw) : null; } catch (e) { return null; }
+  try { const raw = storeGet(CLOUD_SNAPSHOT_KEY); return raw ? JSON.parse(raw) : null; } catch (e) { return null; }
 }
 function saveSnapshot(data) {
   /* Logs are deliberately left out: they are union-merged (append-only, never edited or individually
@@ -3387,9 +3466,9 @@ function saveSnapshot(data) {
      second copy small. */
   const slim = { settings: data.settings || {} };
   MERGE_LISTS.forEach((k) => { slim[k] = data[k] || []; });
-  try { localStorage.setItem(CLOUD_SNAPSHOT_KEY, JSON.stringify(slim)); } catch (e) { console.error("Could not save sync snapshot", e); }
+  storeSet(CLOUD_SNAPSHOT_KEY, JSON.stringify(slim));
 }
-function clearSnapshot() { try { localStorage.removeItem(CLOUD_SNAPSHOT_KEY); } catch (e) {} }
+function clearSnapshot() { storeRemove(CLOUD_SNAPSHOT_KEY); }
 
 /* Compares only the columns that actually round-trip through the Sheet. Comparing whole objects
    would flag any purely-local field as a difference, turning every record into a false conflict. */
@@ -3546,7 +3625,7 @@ async function syncWithSheet() {
   lastSyncedAt = new Date();
   lastSyncError = null;
   lastSyncStats = stats;
-  try { localStorage.setItem(LAST_SYNC_KEY, JSON.stringify({ at: lastSyncedAt.toISOString(), stats })); } catch (e) {}
+  storeSet(LAST_SYNC_KEY, JSON.stringify({ at: lastSyncedAt.toISOString(), stats }));
   return stats;
 }
 
@@ -3603,7 +3682,7 @@ document.getElementById("cloudConfigForm").addEventListener("submit", (e) => {
   const sheetId = document.getElementById("cloudSheetId").value.trim();
   if (!clientId || !sheetId) { alert("Enter both the Client ID and the Sheet ID."); return; }
   cloudConfig = { clientId, sheetId };
-  localStorage.setItem(CLOUD_CONFIG_KEY, JSON.stringify(cloudConfig));
+  storeSet(CLOUD_CONFIG_KEY, JSON.stringify(cloudConfig));
   document.getElementById("signInWrap").style.display = "";
   if (!gisReady || !window.google || !google.accounts) { alert("Still loading Google's sign-in library — make sure you're online, then click Sign in with Google in a moment."); updateSyncUI(); return; }
   initTokenClient();
@@ -3649,9 +3728,9 @@ document.getElementById("reconfigureBtn").addEventListener("click", () => {
 });
 
 document.getElementById("disconnectBtn").addEventListener("click", () => {
-  if (!confirm("Disconnect from Google Sheets? Your local data stays on this device but will stop syncing automatically.")) return;
+  if (!confirm("Disconnect from Google Sheets?\n\nThis stops syncing. Any copy of your data on this device STAYS on it — use \"Erase from this device\" below if you want it removed.")) return;
   cloudConfig = null; accessToken = null; tokenClient = null;
-  localStorage.removeItem(CLOUD_CONFIG_KEY);
+  storeRemove(CLOUD_CONFIG_KEY);
   /* The snapshot describes a sync relationship that no longer exists. Keeping it would make a later
      reconnect read every record as "deleted on the other side" (Section 5.1). */
   clearSnapshot();
@@ -3724,13 +3803,49 @@ function updateSyncUI() {
   }
 }
 
-function renderCloudSyncView() { updateSyncUI(); }
+function renderCloudSyncView() { updateSyncUI(); renderDeviceStorageState(); }
+
+/* ===================== Trusted vs private device (Section 3.18) ===================== */
+function renderDeviceStorageState() {
+  const el = document.getElementById("deviceStorageState");
+  if (!el) return;
+  el.textContent = privateMode
+    ? "Nothing is saved on this device. Your data is held only while this tab is open, and disappears when you close it."
+    : "A copy of your data is saved on this device, so the app works without internet.";
+}
+
+document.getElementById("trustNoBtn").addEventListener("click", () => {
+  keepThisDevicePrivate();
+  document.getElementById("trustScreen").style.display = "none";
+  startAfterTrustChoice();
+});
+document.getElementById("trustYesBtn").addEventListener("click", () => {
+  trustThisDevice();
+  document.getElementById("trustScreen").style.display = "none";
+  startAfterTrustChoice();
+});
+
+document.getElementById("eraseDeviceBtn").addEventListener("click", async () => {
+  /* Erasing a device that still holds unsynced entries destroys them for good — that device is the
+     only place they exist. So offer to send them up first rather than trusting memory (3.18). */
+  const pending = (() => { try { return pendingChangeCount(); } catch (e) { return null; } })();
+  if (pending) {
+    if (!confirm(`${pending} ${pending === 1 ? "change is" : "changes are"} not yet in your Google Sheet.\n\nOK = sync them first, then erase (recommended).\nCancel = stop, erase nothing.`)) return;
+    if (!accessToken) { alert("Sign in to Google first so these changes can be saved, then try again."); return; }
+    try { cloudBusy = true; updateSyncUI(); await syncWithSheet(); }
+    catch (err) { cloudBusy = false; updateSyncUI(); alert("Could not sync, so nothing was erased:\n\n" + err.message); return; }
+    cloudBusy = false;
+  }
+  if (!confirm("Erase this device's copy of your data?\n\nYour Google Sheet is NOT touched — signing in again brings everything back.")) return;
+  eraseThisDevice();
+  location.reload();
+});
 
 /* ===================== Activity Log (Section 3.17) ===================== */
 function renderLogsView() {
   const nameEl = document.getElementById("deviceNameInput");
   if (nameEl && !nameEl.value) {
-    const stored = (() => { try { return localStorage.getItem(DEVICE_KEY) || ""; } catch (e) { return ""; } })();
+    const stored = storeGet(DEVICE_KEY) || "";
     nameEl.value = stored;
     nameEl.placeholder = stored ? stored : "e.g. PC, iPhone, Office";
   }
@@ -3788,9 +3903,18 @@ document.getElementById("txDate").value = todayISO();
 /* Lock BEFORE the first render, and skip rendering entirely while locked so the figures are never
    even placed in the page — not merely hidden behind the overlay (Section 3.16). tryUnlock() calls
    renderAll() once the PIN is accepted. */
-applyLockOnLoad();
-renderLockSettings();
-if (!lockedNow) renderAll();
+/* The trust question comes before even the lock, because it decides whether anything may be written
+   to this device at all — and it must be answered before the first write, not after (Section 3.18). */
+function startAfterTrustChoice() {
+  applyLockOnLoad();
+  renderLockSettings();
+  if (!lockedNow) renderAll();
+}
+if (trustUnanswered) {
+  document.getElementById("trustScreen").style.display = "flex";
+} else {
+  startAfterTrustChoice();
+}
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => { navigator.serviceWorker.register("sw.js").catch(() => {}); });
