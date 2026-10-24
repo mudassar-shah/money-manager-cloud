@@ -1805,6 +1805,7 @@ document.getElementById("resetDataBtn").addEventListener("click", () => {
   if (confirmText !== "DELETE") { if (confirmText !== null) alert("Reset cancelled — you must type DELETE exactly to confirm."); return; }
   storeRemove(STORAGE_KEY);
   db = loadData();
+  logAction("Reset all data", "Every account, transaction, budget and category on this device was deleted");
   saveData();
   renderAll();
   switchView("dashboard");
@@ -3367,7 +3368,7 @@ async function onTokenResponse(resp) {
     /* No "use the Sheet or use this device?" question any more: it was all-or-nothing, gave no hint
        of how many records were at stake, and either answer threw away real data (Section 5.1). */
     const hadLock = lockSignature();
-    const stats = await syncWithSheet();
+    const stats = await syncWithSheet({ interactive: true });
     renderLockSettings(); applyLockIfLockChanged(hadLock); renderAll();
     toast(mergeSummary(stats));
   } catch (err) {
@@ -3479,22 +3480,32 @@ function recordFingerprint(listKey, o) {
   }));
 }
 
-function mergeList(listKey, localArr, sheetArr, snapArr) {
+/* Short human label for a record, used only in Activity Log entries about what a sync removed. */
+function recordLabel(listKey, r) {
+  if (listKey === "transactions") return `${r.date || ""} ${r.description || "(no description)"} ${r.amount || 0}`.trim();
+  if (listKey === "budgets") return `budget ${r.month || ""}`;
+  return r.name || r.date || r.id;
+}
+
+/* keepMissing: records that were synced before but are now absent from the Sheet are KEPT (and go
+   back up) instead of being read as "deleted elsewhere". Used when the Sheet looks wiped (5.1a). */
+function mergeList(listKey, localArr, sheetArr, snapArr, keepMissing) {
   const L = new Map((localArr || []).filter((r) => r && r.id).map((r) => [r.id, r]));
   const S = new Map((sheetArr || []).filter((r) => r && r.id).map((r) => [r.id, r]));
   const P = new Map((snapArr || []).filter((r) => r && r.id).map((r) => [r.id, r]));
-  const stats = { fromDevice: 0, fromSheet: 0, deleted: 0, conflicts: 0 };
+  const stats = { fromDevice: 0, fromSheet: 0, deleted: 0, conflicts: 0, goneFromSheet: 0, restored: 0, removedLabels: [] };
   const out = [];
   /* Local ids first so existing on-screen ordering is preserved; ids only the Sheet has are appended. */
   const ids = new Set([...L.keys(), ...S.keys()]);
   ids.forEach((id) => {
     const l = L.get(id), s = S.get(id), inSnap = P.has(id);
     if (l && !s) {
-      if (inSnap) { stats.deleted++; return; }   // was synced before, now gone from the Sheet -> deleted elsewhere
+      if (inSnap && keepMissing) { stats.restored++; out.push(l); return; }   // Sheet lost it -> put it back
+      if (inSnap) { stats.deleted++; stats.goneFromSheet++; stats.removedLabels.push(recordLabel(listKey, l)); return; }   // was synced before, now gone from the Sheet -> deleted elsewhere
       stats.fromDevice++; out.push(l); return;   // never synced -> added on this device
     }
     if (!l && s) {
-      if (inSnap) { stats.deleted++; return; }   // was synced before, now gone locally -> deleted here
+      if (inSnap) { stats.deleted++; stats.removedLabels.push(recordLabel(listKey, s)); return; }   // was synced before, now gone locally -> deleted here
       stats.fromSheet++; out.push(s); return;    // added on another device
     }
     const fl = recordFingerprint(listKey, l), fs = recordFingerprint(listKey, s);
@@ -3510,14 +3521,14 @@ function mergeList(listKey, localArr, sheetArr, snapArr) {
 
 /* Settings is a key/value object rather than a list, so the same rules are applied per key. This is
    what lets clearing the App Lock on one device propagate instead of being undone by the next sync. */
-function mergeSettings(localS, sheetS, snapS) {
+function mergeSettings(localS, sheetS, snapS, keepMissing) {
   const has = (o, k) => !!o && Object.prototype.hasOwnProperty.call(o, k);
   const fp = (v) => JSON.stringify(v === undefined || v === null ? "" : v);
   const out = {};
   let conflicts = 0;
   new Set([...Object.keys(localS || {}), ...Object.keys(sheetS || {})]).forEach((k) => {
     const inL = has(localS, k), inS = has(sheetS, k), inP = has(snapS, k);
-    if (inL && !inS) { if (!inP) out[k] = localS[k]; return; }
+    if (inL && !inS) { if (!inP || keepMissing) out[k] = localS[k]; return; }
     if (!inL && inS) { if (!inP) out[k] = sheetS[k]; return; }
     const fl = fp(localS[k]), fs = fp(sheetS[k]);
     if (fl === fs) { out[k] = localS[k]; return; }
@@ -3537,18 +3548,20 @@ function mergeLogs(localL, sheetL) {
   return [...m.values()].sort((a, b) => String(a.at || "").localeCompare(String(b.at || ""))).slice(-LOG_LIMIT);
 }
 
-function mergeWithSheet(localDb, sheetDb) {
+function mergeWithSheet(localDb, sheetDb, keepMissing) {
   const snap = loadSnapshot();
-  const stats = { fromDevice: 0, fromSheet: 0, deleted: 0, conflicts: 0 };
+  const stats = { fromDevice: 0, fromSheet: 0, deleted: 0, conflicts: 0, goneFromSheet: 0, restored: 0, removedLabels: [] };
   const merged = {};
   MERGE_LISTS.forEach((k) => {
-    const r = mergeList(k, localDb[k], sheetDb[k], snap ? snap[k] : null);
+    const r = mergeList(k, localDb[k], sheetDb[k], snap ? snap[k] : null, keepMissing);
     merged[k] = r.list;
     stats.fromDevice += r.stats.fromDevice; stats.fromSheet += r.stats.fromSheet;
     stats.deleted += r.stats.deleted; stats.conflicts += r.stats.conflicts;
+    stats.goneFromSheet += r.stats.goneFromSheet; stats.restored += r.stats.restored;
+    stats.removedLabels.push(...r.stats.removedLabels);
   });
   merged.logs = mergeLogs(localDb.logs, sheetDb.logs);
-  const ms = mergeSettings(localDb.settings, sheetDb.settings, snap ? snap.settings : null);
+  const ms = mergeSettings(localDb.settings, sheetDb.settings, snap ? snap.settings : null, keepMissing);
   merged.settings = ms.settings;
   stats.conflicts += ms.conflicts;
   return { merged, stats };
@@ -3580,6 +3593,7 @@ function mergeSummary(stats) {
   if (stats.fromSheet) bits.push(`${stats.fromSheet} from the Sheet`);
   if (stats.deleted) bits.push(`${stats.deleted} deleted`);
   if (stats.conflicts) bits.push(`${stats.conflicts} kept from this device (edited in both places)`);
+  if (stats.restored) bits.push(`${stats.restored} put back into the Sheet`);
   return bits.length ? "Synced — " + bits.join(", ") : "Synced — already up to date";
 }
 
@@ -3588,7 +3602,23 @@ function mergeSummary(stats) {
    clear-and-rewrite, which is only safe because what it writes is the merged (complete) dataset.
    The snapshot is written last, after the push has succeeded, so a failed sync leaves the pending
    work recorded and it goes up on the next attempt. */
-async function syncWithSheet() {
+/* Syncs run ONE AT A TIME. Two overlapping syncs were the 2026-10-24 data loss: entries saved a
+   second or so apart each scheduled a sync; the second read the Sheet in the gap after the first
+   had cleared it, saw an empty Sheet, and the merge read every previously-synced record (and the
+   PIN) as "deleted on another device" — leaving only the newest few entries, everywhere (5.1a).
+   Each call now waits for the one before it, so it always reads the Sheet the last one wrote. */
+let syncChain = Promise.resolve();
+function syncWithSheet(opts) {
+  const run = syncChain.then(() => syncWithSheetNow(opts || {}));
+  syncChain = run.catch(() => {});
+  return run;
+}
+
+/* A Sheet-side mass disappearance is never trusted silently. Above this many records AND this share
+   of what was last synced, the user decides (Sync Now / sign-in) or the sync pauses (background). */
+const MASS_LOSS_MIN = 10, MASS_LOSS_SHARE = 0.2;
+
+async function syncWithSheetNow(opts) {
   const sheetData = coerceTypesFromSheet(await readAllFromSheet());
   ensureCurrencies(sheetData);
   /* seedBusinessCategories is deliberately NOT called on the pulled copy. It mints brand-new ids
@@ -3607,10 +3637,47 @@ async function syncWithSheet() {
   const untouched = !loadSnapshot() && db.transactions.length === 0 && (db.logs || []).length === 0 &&
     db.budgets.length === 0 && db.reconciliations.length === 0;
   const sheetHasData = sheetData.transactions.length > 0 || sheetData.accounts.length > 0;
-  const { merged, stats } = untouched && sheetHasData
-    ? { merged: sheetData, stats: { fromDevice: 0, fromSheet: sheetData.transactions.length, deleted: 0, conflicts: 0 } }
-    : mergeWithSheet(db, sheetData);
+  let result, guardLog = null;
+  if (untouched && sheetHasData) {
+    result = { merged: sheetData, stats: { fromDevice: 0, fromSheet: sheetData.transactions.length, deleted: 0, conflicts: 0, goneFromSheet: 0, restored: 0, removedLabels: [] } };
+  } else {
+    result = mergeWithSheet(db, sheetData, false);
+    /* Guard (5.1a): a Sheet that is empty while the last sync held data has been wiped (a cleared
+       push that never finished, a manual edit, a bug) — it is NOT a deletion made on another device.
+       Put this device's copy back instead of erasing it. */
+    const snap = loadSnapshot();
+    const snapCount = snap ? MERGE_LISTS.reduce((n, k) => n + (snap[k] || []).length, 0) : 0;
+    const sheetWiped = !sheetHasData && snap && ((snap.transactions || []).length > 0 || (snap.accounts || []).length > 0);
+    const massLoss = result.stats.goneFromSheet >= MASS_LOSS_MIN && result.stats.goneFromSheet >= snapCount * MASS_LOSS_SHARE;
+    if (sheetWiped || massLoss) {
+      const n = result.stats.goneFromSheet;
+      let keep = sheetWiped;
+      if (!keep) {
+        if (!opts.interactive) {
+          logAction("Sync paused — records missing from Sheet", `${n} previously-synced records are no longer in the Google Sheet. Nothing was removed from this device. Press Sync Now to decide.`);
+          saveLocalOnly();
+          throw new Error(`Sync paused: ${n} records that were synced before are missing from your Google Sheet. Nothing was removed from this device. Open Cloud Sync and press Sync Now to decide.`);
+        }
+        keep = confirm(`${n} records that were synced before are now MISSING from your Google Sheet.\n\nThis normally means the Sheet was wiped or edited by mistake, not that you deleted them.\n\nOK = KEEP them and put them back into the Sheet (recommended).\nCancel = remove them from this device too.`);
+      }
+      if (keep) {
+        result = mergeWithSheet(db, sheetData, true);
+        /* Logged after db is replaced below, or the entry would land on the discarded copy. */
+        guardLog = [sheetWiped ? "Sheet found empty — restored from this device" : "Kept records missing from Sheet",
+          `${result.stats.restored} records put back into the Google Sheet instead of being deleted`];
+      }
+    }
+  }
+  const { merged, stats } = result;
   db = merged;
+  if (guardLog) logAction(guardLog[0], guardLog[1]);
+  /* Log every sync that pulled in or removed anything, so "where did my entries go?" has an answer.
+     Routine pushes of this device's own new entries are already logged by the action itself. */
+  if (stats.fromSheet || stats.deleted || stats.conflicts) {
+    const shown = stats.removedLabels.slice(0, 15).join("; ");
+    const more = stats.removedLabels.length > 15 ? ` …and ${stats.removedLabels.length - 15} more` : "";
+    logAction("Synced with Google Sheet", mergeSummary(stats).replace(/^Synced — /, "") + (shown ? ` · removed: ${shown}${more}` : ""));
+  }
   /* Re-run the repairs on the combined set: a parent kept on one side with its child kept on the
      other, or two independently-assigned category orders, only meet here. */
   ensureCurrencies(db);
@@ -3619,8 +3686,12 @@ async function syncWithSheet() {
   repairReconciliationBuckets(db);
   ensureCategoryOrder(db);
   saveLocalOnly();
+  /* The snapshot must be exactly what was PUSHED, copied before the push awaits. Snapshotting the
+     live db afterwards recorded an entry typed during the upload as "already synced" although it
+     never reached the Sheet — so the next sync read it as deleted elsewhere and dropped it (5.1a). */
+  const pushed = JSON.parse(JSON.stringify(db));
   await pushAllToSheet();
-  saveSnapshot(db);
+  saveSnapshot(pushed);
   lastSyncedAt = new Date();
   lastSyncError = null;
   lastSyncStats = stats;
@@ -3653,11 +3724,21 @@ function buildRowsForTab(tab) {
   return [cols, ...items.map((item) => cols.map((c) => (item[c] !== undefined && item[c] !== null ? item[c] : "")))];
 }
 
+/* WRITE FIRST, then clear only what lies beyond the new data. The old order (clear everything, then
+   write) left the Sheet completely empty between the two requests — if the write failed, the app was
+   closed, or another sync read the Sheet in that gap, the Sheet looked wiped (5.1a). A failure now
+   at worst leaves a few stale rows below the data, which the next sync's merge removes again. */
 async function pushAllToSheet() {
   const tabNames = Object.keys(SHEET_TABS);
-  await sheetsFetch("/values:batchClear", { method: "POST", body: JSON.stringify({ ranges: tabNames.map((t) => `${t}!A:Z`) }) });
   const data = tabNames.map((tab) => ({ range: `${tab}!A1`, values: buildRowsForTab(tab) }));
   await sheetsFetch("/values:batchUpdate", { method: "POST", body: JSON.stringify({ valueInputOption: "RAW", data }) });
+  const tail = [];
+  data.forEach((d, i) => {
+    const tab = tabNames[i], rows = d.values.length, cols = Math.max(...d.values.map((r) => r.length));
+    tail.push(`${tab}!A${rows + 1}:Z`);
+    if (cols < 26) tail.push(`${tab}!${String.fromCharCode(65 + cols)}1:Z${rows}`);
+  });
+  await sheetsFetch("/values:batchClear", { method: "POST", body: JSON.stringify({ ranges: tail }) });
 }
 
 function scheduleCloudPush() {
@@ -3713,7 +3794,7 @@ document.getElementById("syncNowBtn").addEventListener("click", async () => {
     /* Was `db = sheetData` — a download-only that silently destroyed anything entered on this device
        since the last push. It now merges both sides and sends the result up (Section 5.1). */
     const hadLock = lockSignature();
-    const stats = await syncWithSheet();
+    const stats = await syncWithSheet({ interactive: true });
     renderLockSettings(); applyLockIfLockChanged(hadLock); renderAll();
     toast(mergeSummary(stats));
   } catch (err) { console.error(err); lastSyncError = err.message; alert("Sync failed: " + err.message); }
@@ -3831,7 +3912,7 @@ document.getElementById("eraseDeviceBtn").addEventListener("click", async () => 
   if (pending) {
     if (!confirm(`${pending} ${pending === 1 ? "change is" : "changes are"} not yet in your Google Sheet.\n\nOK = sync them first, then erase (recommended).\nCancel = stop, erase nothing.`)) return;
     if (!accessToken) { alert("Sign in to Google first so these changes can be saved, then try again."); return; }
-    try { cloudBusy = true; updateSyncUI(); await syncWithSheet(); }
+    try { cloudBusy = true; updateSyncUI(); await syncWithSheet({ interactive: true }); }
     catch (err) { cloudBusy = false; updateSyncUI(); alert("Could not sync, so nothing was erased:\n\n" + err.message); return; }
     cloudBusy = false;
   }
