@@ -506,6 +506,24 @@ Only the Google account you signed in with can access your data — nobody else,
 
 ---
 
+## 12a. If Your Data Ever Disappears
+
+This happened once, on 24 October 2026: three entries were saved quickly one after another, the syncs tripped over each other, and every device ended up with only those three entries and the default PIN. It has been fixed, but if anything like it ever happens again, **your data is not gone** — your Google Sheet keeps every past version of itself.
+
+1. **Stop.** Don't open the app on your other phone or computer yet. Each device that syncs with an emptied Sheet loses its own copy too.
+2. **Open your Google Sheet** ("Money Manager Data") → **File → Version history → See version history.** Click through the versions on the right (click the name line under each time, not the time itself) and open the **Transactions** tab until you find the last one that still has all your entries. Press **Restore this version**.
+3. **On each device:** if your own PIN is refused, unlock with **8833** — the device simply lost its copy of your PIN; your real one is safe in the Sheet. Then go to **Cloud Sync → Sync Now**. Once it finishes, the app locks again and your own PIN works.
+4. **Re-enter** anything you added after the version you restored. The **Activity Log** tab shows exactly what those were — date, amount, account, category and note.
+
+**If the app says records are "missing from your Google Sheet":** this is a safety check, added after that day. The app noticed lots of entries vanished from the Sheet at once and stopped instead of deleting them from your device.
+- **OK** puts them back into the Sheet — choose this if you didn't delete them yourself.
+- **Cancel** removes them from this device too — only choose this if you know they're leftovers (for example, right after restoring an older version, as in step 3).
+- Not sure? Press OK. Putting back too much is easy to tidy up; deleting too much is not.
+
+**The Activity Log now records syncs as well**, so after any sync that brought in or removed entries you'll see a line like *"Synced with Google Sheet — 2 from the Sheet, 1 deleted · removed: …"* naming what went.
+
+---
+
 ## 13. Letting Someone Else Use This
 
 - **To let a friend use the PC version:** just give them the folder of files. They open it in any browser — no installation, no account. Their data is entirely separate from yours from the start.
@@ -514,6 +532,12 @@ Only the Google account you signed in with can access your data — nobody else,
 ---
 
 ## Quick Answers to Common Questions
+
+**"My entries disappeared and my PIN went back to 8833."**
+Your data is still in your Google Sheet's version history. Follow Section 12a step by step.
+
+**"The app says records are missing from my Google Sheet."**
+That's the safety check from Section 12a. If you didn't delete them yourself, press OK.
 
 **"How do I get this as an app on my phone instead of using it in the browser?"**
 Add to Home Screen on iPhone Safari, or Install app on Android Chrome (Section 2). It's not in the App Store, but it opens and feels like a real app once installed.
