@@ -68,6 +68,7 @@ Two things about the move that were verified rather than assumed:
 - `panel` — free-text IPTV panel name (e.g. `Premium`, `Cheap`) identifying **which separate credit stock** a transaction belongs to (Section 3.11). Credits never move between panels.
 - `credits` — number of credits. On a business **expense** with a `panel`, this is credits *bought* (making that row a credit purchase, and `amount / credits` its cost per credit). On a business **income** with a `panel`, this is credits *used* by that sale. Absent/0 on everything else.
 - `transferId` — set on **both halves** of a transfer (Section 3.10). Empty/absent means an ordinary transaction. A non-empty value means this row is one half of a money movement between two of your own accounts, and the value is shared by exactly the two rows forming that pair. Presence of a value is the *only* test for "is this a transfer" — there is deliberately no separate boolean flag, so the two can never disagree with each other.
+- `notTransfer` — boolean. Set only by **Not a transfer** on the Transfers tab (Section 3.20), so a suggestion the user has rejected is never raised again for that entry. Absent/false on everything else. Preserved through an edit.
 - `clearedOn` — the statement month (`"YYYY-MM"`) this transaction was ticked off against in a **Statement Check** (Section 3.19). Empty/absent means "not matched to any bank statement yet". Set and cleared only by the Statement Check panel; an edit that changes the **amount, account or month** clears it (the match no longer holds), any other edit keeps it.
 - `bucket` — like Category (2.1), the Transactions tab shows one ledger at a time via a Personal/Business toggle; a new transaction always takes the bucket of the currently active toggle, not a per-transaction picker.
 - **Bulk move account**: the Transactions tab's multi-select bar has a "Move to Account" action for fixing mis-entered transactions (e.g. logged against Cash instead of a bank account). It changes only `accountId` on the selected transactions — every other field (`type`, `date`, `categoryId`, `amount`, `description`, `bucket`) is left untouched. Because both the source and target account balances are always computed live from `accountId` matches (Section 3.1), moving a transaction automatically and correctly shifts its effect from the old account's balance to the new one — no separate adjustment or reconciliation entry is created or needed. The target-account dropdown is scoped to the currently active ledger (`transactionsLedger`), so a transaction can never be moved into an account belonging to the other bucket. Any reconciliation history (Section 2.5) tied to the *old* account is left as-is — it's a historical log of what was checked at the time, not a live calculation, so moving transactions after the fact does not retroactively change it.
@@ -605,6 +606,32 @@ appClosing  = appOpening + tickedNet + untickedNet        (= accountBalanceBefor
 
 **Out of scope for v1, on purpose:** importing a bank statement file to tick automatically — every bank's export differs and changes without notice; manual ticking works for every bank today.
 
+### 3.20 Transfers tab — every transfer in one place, and the ones that look broken
+
+**Why.** A transfer is two rows, and the Transactions tab shows one ledger at a time (4 rule 2), so a Business → Personal transfer is split across two views and a one-sided one is invisible. The user suspected a missing entry from a transfer. A read-only scan of the live Sheet on 2026-10-31 found all 24 marked pairs intact, but a **Rs 500,000 BAF (business) expense "Transfer to Meezan Bank" on 2026-07-25 filed under Director expenses with no matching income anywhere**, plus four same-amount out/in pairs within three days that were never marked as transfers.
+
+**Scope.** A new **Transfers** nav tab. It is a *view*: the existing transfer forms (Transactions tab, same ledger; Accounts tab, Business ↔ Personal) and Mark as Transfer are unchanged and remain the way to create transfers. The tab only adds fixes for the problems it detects, each applied by an explicit button.
+
+**The list.** Every complete pair (two rows sharing a `transferId`, one expense, one income), one line per pair: date · From account (ledger badge) → To account (ledger badge) · amount (both amounts when the currencies differ) · note. Filters: month, account (matches either side), kind (Personal↔Personal, Business↔Business, Business↔Personal — the order of the two sides does not matter). Counts per kind are shown above the list. Newest first.
+
+**Needs attention** (shown above the list, only when non-empty):
+```
+Broken transfer  = a transferId shared by ≠ 2 rows, or by 2 rows of the same type
+One-sided        = no transferId, not notTransfer, not isReconciliation,
+                   AND (category name is "Transfer" OR description contains "transfer"),
+                   AND not part of a likely pair below
+Likely pair      = expense e and income i, both without transferId / notTransfer / isReconciliation,
+                   different accounts, same currency, equal amounts, dates ≤ 3 days apart.
+                   Matched greedily, closest dates first; each row joins at most one pair.
+```
+Actions:
+- **Broken → Remove transfer marking** — deletes `transferId` from the remaining row(s), so it counts as ordinary income/expense again (4 rule 6: a lone half must never stay marked).
+- **One-sided → Complete this transfer** — the user picks the other account, the date (defaults to the entry's) and, if the currencies differ, the amount on the other side. The app adds the opposite row on that account (`bucket` = *that account's* ledger, exactly like a cross-ledger transfer, 3.14), links both with a new `transferId`, and moves the original to the `Transfer` category of its own ledger; the old category is recorded in the log. Effect: the original stops counting as income/expense, and the other account's balance changes by the amount.
+- **Likely pair → Mark as transfer** — the same rule as the Transactions-tab bulk action (3.10): both rows get one `transferId`; categories, amounts, dates and balances unchanged; they stop counting as income/expense.
+- **Not a transfer** — sets `notTransfer` on the row(s) so the suggestion never comes back.
+
+Every action is logged and saved like any other change. Nothing is ever changed without the button press.
+
 ## 4. Business Rules / Invariants (must hold at all times)
 
 1. A category with subcategories cannot itself have a `parentId` (Section 2.1).
@@ -626,7 +653,7 @@ Your Google Sheet has one tab per entity. The exact columns, in order, that get 
 |---|---|
 | `Categories` | `id, name, type, color, parentId, order, bucket, excludeFromTotals` |
 | `Accounts` | `id, name, type, openingBalance, openingDate, color, bucket, excludeFromBalance, currency` |
-| `Transactions` | `id, type, date, accountId, categoryId, amount, description, isReconciliation, bucket, transferId, ref, panel, credits, clearedOn` |
+| `Transactions` | `id, type, date, accountId, categoryId, amount, description, isReconciliation, bucket, transferId, ref, panel, credits, clearedOn, notTransfer` |
 | `Statements` | `id, accountId, month, openingBalance, closingBalance, status, checkedAt` (Section 3.19) — three-way merged by `id` like the other lists |
 | `Budgets` | `id, categoryId, month, amount` |
 | `Reconciliations` | `id, accountId, date, actualBalance, computedBefore, diff` |
@@ -751,6 +778,14 @@ When a new field is added to categories, accounts, or transactions (like `parent
 **8.15 Net This Month stat** — add income and expense transactions in the same month, confirm "Net This Month" equals Income − Expense exactly; switch months and confirm it recalculates per month; confirm the Business tab's 4-card stat grid is unaffected (still `repeat(4, 1fr)` on desktop) and its "Net Profit" figure is untouched.
 
 **8.16 Total Balance moved to Accounts** — confirm the Dashboard has exactly 4 stat cards (Income, Expenses, Net This Month, Savings Rate) and no Total Balance card anywhere on it; confirm the Accounts tab's "Your Accounts" card shows "Total Balance (Personal)" matching the sum of personal accounts' `accountCurrentBalance`, and that it excludes any business accounts even though the account list below it shows both; confirm switching Dashboard months does not affect the Accounts tab figure at all (it's not month-scoped); confirm the Business tab's "Total Business Balance" is untouched.
+
+**8.32 Transfers tab (Section 3.20)** — the fixes change balances and totals, so check exact numbers:
+- **Round-trip (8.7)**: `notTransfer` survives write → Sheet → read as `true`; an old Sheet without the column loads it as **absent** (not `false`) — absent is how a local row that never had it fingerprints, so a `false` would make every untouched row look edited on its first sync. A second sync must report nothing to change.
+- The list shows each complete pair once, both ledgers together; month / account / kind filters each narrow it correctly, and kind ignores direction.
+- Fixture mirroring the live data: a one-sided business expense "Transfer to Meezan Bank" is listed as one-sided; **Complete** to a personal account → a personal income of the same amount appears on that account, both rows share a `transferId`, the original is in its ledger's Transfer category, the business month's expenses fall by exactly that amount, the receiving balance rises by exactly that amount, and the entry leaves Needs attention.
+- A same-amount out/in pair 1 day apart is a likely pair; **Mark** leaves both balances byte-identical and removes the amount from income and expense. A pair 4 days apart, or of different amounts, is not suggested. A reconciliation adjustment is never suggested.
+- **Not a transfer** hides a suggestion permanently (survives sync). A broken (lone) half is listed and **Remove transfer marking** returns it to ordinary income/expense.
+- The new tab fits a 375px screen with no horizontal page scroll.
 
 **8.31 Statement Check (Section 3.19)** — the risk is a wrong "matched", so test the refusal paths as hard as the happy path:
 - **Round-trip first (8.7)**: `clearedOn` and every `Statements` column survive write → Sheet → read; an **old Sheet without `clearedOn` or without a `Statements` tab** loads with `clearedOn` empty and no statements, and the next sync creates the tab.
@@ -987,6 +1022,10 @@ This mobile layout work applies to the **Cloud** copy first, since that's the on
 ---
 
 ## Change Log
+
+- **2026-10-31 (Transfers tab — see every transfer, find the broken ones)** — User suspected a missing entry from a transfer and wanted to *see* transfers across both ledgers; the existing transfer forms stay exactly as they were. Added a **Transfers** nav tab (Section 3.20): all complete pairs on one list with month / account / kind filters, plus a Needs attention box for broken pairs, one-sided transfers and likely unmarked pairs, each with an explicit fix. New `notTransfer` field on Transaction (added to `SHEET_TABS` and `coerceTypesFromSheet`, Section 6) so a dismissed suggestion stays dismissed. A read-only scan of the live Sheet beforehand found the Rs 500,000 BAF → Meezan entry of 2026-07-25 recorded as a business expense with no receiving side — the likely missing entry — which the user can now complete from the tab after confirming against the Meezan statement.
+  - **Verified** by a 36-check headless-Chrome suite (Section 8.32) on a fixture mirroring the live data: 4 pairs listed once each with kinds counted regardless of direction; the 500,000 found as one-sided with Meezan (not "Meezan Mudassar") guessed from the note; a mismatched same-currency amount refused; completing it adds a personal income of exactly 500,000 to Meezan on the same date, moves the original to the business Transfer category, lowers July business expenses by exactly 500,000, raises Meezan by exactly 500,000 and leaves BAF unchanged; the 1-day 5,307 pair suggested while 4-days-apart, different-amount and reconciliation-adjustment rows are not; Mark leaves every balance byte-identical and removes 5,307 from both income and expense; Not a transfer persists through an edit and a sync; a lone half is reported and unmarked. Sync: an old Sheet without the `notTransfer` column syncs with **nothing to change** (no false edits), and a second sync after a dismissal also reports nothing. Statement Check (32) and sync-safety (16) suites still pass in full.
+  - **Phone layout**: the list uses two columns (date shown inside the transfer cell) so the amount stays visible; measured at 375px — page width equals the viewport and the table needs no horizontal scroll.
 
 - **2026-10-31 (Statement Check — find *which* entries make a bank balance disagree)** — User's real bank balances no longer matched the app, and the existing Reconcile (3.6) could only plug the difference with one adjustment, hiding the cause. Added a per-account, per-month **Statement Check** (Section 3.19): type the statement's opening/closing balance, tick each entry that is on the statement, and the panel shows the opening mismatch (→ earlier month), entries not on the statement, and the unexplained remainder (→ entries missing from the app). New `clearedOn` field on Transaction and a new `Statements` entity — both added to `SHEET_TABS` **and** `coerceTypesFromSheet` (Section 6), the Statements list added to the three-way merge, and `ensureSheetStructure` now also runs once inside the sync itself so an existing Sheet gains the new tab on any sync path, not only on sign-in.
   - **Verified** by a 32-check headless-Chrome suite (Section 8.31) against the real code: opening mismatch reported and Finish refused; an unticked entry and a left-out entry each produce exactly their signed amount; Finish succeeds and is logged only when everything holds; note-only edit keeps the tick, amount edit clears it and the month shows *changed since matched*; the adjustment books exactly the remainder, ticked, in the account's bucket, dated the month's last day; Move to Account clears ticks; ticking leaves every balance byte-identical. Sync: an **old Sheet with no `Statements` tab and a 13-column Transactions header** syncs without error (tab created, `clearedOn` column added), `clearedOn` and every statement field survive the round-trip, a blank statement balance comes back as `null` rather than `0`, and a second sync reports nothing to change. The 16-check sync suite from 5.1a still passes in full.

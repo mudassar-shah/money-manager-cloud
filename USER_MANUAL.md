@@ -100,6 +100,24 @@ The app will refuse if the two don't make sense as a transfer — if they're not
 
 ---
 
+## 4b. The Transfers Tab — See Every Transfer in One Place
+
+The Transactions tab shows Personal *or* Business, never both, so a transfer between business and personal is split across two screens. The **Transfers** tab (in the menu, under Transactions) shows **every** transfer on one list — Personal ↔ Personal, Business ↔ Business and Business ↔ Personal — with both sides on one line: date, from-account → to-account, amount and note.
+
+- Filter by **month**, **account** (either side) or **kind**. The counts at the top show how many of each kind you have.
+- This tab is for **looking**. To make a new transfer, keep using the Transfer form on the **Transactions** tab (same side) or the **Accounts** tab (Business ↔ Personal) — they work exactly as before.
+
+### "Needs attention"
+
+When something looks wrong, a box appears at the top. Nothing changes unless you press a button.
+
+- **"Looks like a transfer, but only one side exists"** — for example, money recorded leaving BAF with the note "Transfer to Meezan Bank", but nothing arriving in Meezan. Pick the account it went into (the app guesses from the note), check the date, and press **Complete this transfer**. The app adds the arriving side and links the two. The original entry stops counting as an expense, and the receiving account's balance goes up by that amount. **Check your bank statement first** — if the money is already included somewhere else (for example in an opening balance), completing it would count it twice.
+- **"Same amount out and in — probably a transfer"** — the same amount left one account and arrived in another within 3 days, but they were entered as two ordinary entries. **Mark as transfer** links them: balances don't change, but they stop inflating your income and expenses.
+- **"Broken transfer"** — one side of a transfer was lost. **Remove transfer marking** makes the remaining entry an ordinary one again.
+- **Not a transfer** — if a suggestion is wrong (say a freelance payment whose note says "transfer"), press this and it never shows again.
+
+---
+
 ## 5. Fixing Mistakes
 
 ### Editing one transaction
@@ -577,6 +595,9 @@ This is now fixed — picking a main category shows all entries under its subcat
 
 **"I want a budget on 'Food' to also count spending on 'Groceries' (a subcategory of Food)."**
 It already does — no extra setup needed (Section 6).
+
+**"I think a transfer is missing — money left one account but never arrived in the other."**
+Open the **Transfers** tab. If it's listed under *Needs attention → only one side exists*, confirm it on your bank statement and press **Complete this transfer** (Section 4b).
 
 **"I took cash out of my bank and now my Income looks higher than what I actually earned."**
 That's what the Transfer form is for (Section 4a). Use **Mark as Transfer** on the two entries you already made to fix it, including for past months.

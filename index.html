@@ -235,6 +235,17 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
 .stmt-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .cleared-tick { font-size: 11px; color: var(--income); margin-left: 4px; }
 .stmt-actions .primary-btn:disabled { opacity: .45; cursor: not-allowed; }
+/* Transfers tab (Section 3.20) */
+.tr-counts { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; font-size: 13px; }
+.tr-counts span { background: var(--bg); border-radius: 999px; padding: 3px 10px; }
+.tr-side { white-space: nowrap; }
+.tr-ledger { font-size: 10px; text-transform: uppercase; letter-spacing: .03em; color: var(--text-muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; margin-left: 4px; }
+.tr-issue { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
+.tr-issue-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: #b45309; margin-bottom: 4px; }
+.tr-issue-line { font-size: 14px; margin: 2px 0; overflow-wrap: anywhere; }
+.tr-issue-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: end; margin-top: 8px; }
+.tr-issue-actions label { display: flex; flex-direction: column; font-size: 12px; color: var(--text-muted); gap: 4px; font-weight: 600; }
+.tr-issue-actions select, .tr-issue-actions input { max-width: 100%; }
 .stmt-panel .tx-table td, .stmt-panel .tx-table th { padding: 8px 6px; }
 .stmt-panel .tx-table td.amount { white-space: nowrap; }
 /* Four card actions no longer fit beside the name on a phone — let them drop below it (10.4a). */
@@ -310,6 +321,7 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
       <button class="nav-btn active" data-view="dashboard">Dashboard</button>
       <button class="nav-btn" data-view="accounts">Accounts</button>
       <button class="nav-btn" data-view="transactions">Transactions</button>
+      <button class="nav-btn" data-view="transfers">Transfers</button>
       <button class="nav-btn" data-view="budgets">Budgets</button>
       <button class="nav-btn" data-view="yearly">Yearly Report</button>
       <button class="nav-btn" data-view="business">Business</button>
@@ -672,6 +684,41 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
               <tr><th class="checkbox-col"><input type="checkbox" id="selectAllTx"></th><th>Date</th><th>Account</th><th>Category</th><th>Description</th><th class="right">Amount</th><th></th></tr>
             </thead>
             <tbody id="txTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- TRANSFERS (Section 3.20) — a view of every transfer across both ledgers. Transfers are still
+         created with the existing forms on the Transactions and Accounts tabs. -->
+    <section id="view-transfers" class="view">
+      <header class="view-header">
+        <h1>Transfers</h1>
+      </header>
+      <div class="card" id="trAttentionCard" style="display:none;">
+        <h2>Needs attention</h2>
+        <p class="hint">Entries that look like a transfer but aren't recorded as one. Nothing changes unless you press a button.</p>
+        <div id="trAttentionList"></div>
+      </div>
+      <div class="card">
+        <h2>All transfers</h2>
+        <p class="hint">Money moved between your own accounts — both sides on one line, Personal and Business together. None of these count as income or expense. To add a transfer, use the Transfer form on the Transactions tab (same side) or on the Accounts tab (Business ↔ Personal).</p>
+        <div class="tr-counts" id="trCounts"></div>
+        <div class="tx-filters">
+          <input type="month" id="trFilterMonth">
+          <select id="trFilterAccount"></select>
+          <select id="trFilterKind">
+            <option value="">All kinds</option>
+            <option value="personal-personal">Personal ↔ Personal</option>
+            <option value="business-business">Business ↔ Business</option>
+            <option value="business-personal">Business ↔ Personal</option>
+          </select>
+          <button type="button" id="trClearFilters" class="icon-link">Clear</button>
+        </div>
+        <div class="table-wrap">
+          <table class="tx-table">
+            <thead><tr><th>Transfer</th><th class="right">Amount</th></tr></thead>
+            <tbody id="trTableBody"></tbody>
           </table>
         </div>
       </div>
@@ -1770,6 +1817,7 @@ function switchView(view) {
   if (view === "dashboard") renderDashboard();
   if (view === "accounts") renderAccountsView();
   if (view === "transactions") renderTransactionsView();
+  if (view === "transfers") renderTransfersView();
   if (view === "budgets") renderBudgetsView();
   if (view === "yearly") renderYearlyView();
   if (view === "business") renderBusinessView();
@@ -2612,6 +2660,7 @@ document.getElementById("txForm").addEventListener("submit", (e) => {
     /* Preserve system flags the form never collects — this record is rebuilt from scratch, which would otherwise silently strip them (Section 3.10). */
     if (existingTx.transferId) record.transferId = existingTx.transferId;
     if (existingTx.isReconciliation) record.isReconciliation = true;
+    if (existingTx.notTransfer) record.notTransfer = true;
     /* A statement tick survives only edits that leave the matched line as the bank shows it — the
        amount, direction, account and month. Changing any of those makes the match untrue (3.19). */
     if (existingTx.clearedOn && existingTx.amount === record.amount && existingTx.type === record.type &&
@@ -3112,6 +3161,175 @@ function renderTransactionsTable() {
   updateTxBulkBar();
 }
 
+/* ================= TRANSFERS TAB (Section 3.20) =================
+   A view across BOTH ledgers — the Transactions tab can only show one at a time, which splits a
+   Business <-> Personal transfer in two and makes a one-sided one invisible. Transfers are still
+   created with the existing forms; this tab only adds explicit fixes for what it detects. */
+const ledgerOf = (accountId) => ((getAccount(accountId) || {}).bucket || "personal");
+const ledgerBadge = (accountId) => `<span class="tr-ledger">${ledgerOf(accountId) === "business" ? "Business" : "Personal"}</span>`;
+const accName = (id) => (getAccount(id) || {}).name || "?";
+const daysApart = (a, b) => Math.abs((new Date(a) - new Date(b)) / 864e5);
+
+function transferAnalysis() {
+  const groups = new Map();
+  db.transactions.forEach((t) => { if (t.transferId) { if (!groups.has(t.transferId)) groups.set(t.transferId, []); groups.get(t.transferId).push(t); } });
+  const pairs = [], broken = [];
+  groups.forEach((rows, id) => {
+    const out = rows.find((t) => t.type === "expense"), inn = rows.find((t) => t.type === "income");
+    if (rows.length === 2 && out && inn) pairs.push({ id, out, inn, kind: [ledgerOf(out.accountId), ledgerOf(inn.accountId)].sort().join("-") });
+    else broken.push({ id, rows });
+  });
+  /* Adjustments and already-dismissed rows are never suggested. */
+  const free = db.transactions.filter((t) => !t.transferId && !t.notTransfer && !t.isReconciliation && t.date);
+  const cands = [];
+  free.filter((e) => e.type === "expense").forEach((e) => free.forEach((i) => {
+    if (i.type === "income" && i.accountId !== e.accountId && accountCurrency(i.accountId) === accountCurrency(e.accountId) &&
+        round2(i.amount) === round2(e.amount) && daysApart(i.date, e.date) <= 3) cands.push({ e, i, d: daysApart(i.date, e.date) });
+  }));
+  /* Closest dates win, and each row joins at most one suggested pair. */
+  cands.sort((a, b) => a.d - b.d || a.e.date.localeCompare(b.e.date));
+  const used = new Set(), likely = [];
+  cands.forEach((c) => { if (used.has(c.e.id) || used.has(c.i.id)) return; used.add(c.e.id); used.add(c.i.id); likely.push({ out: c.e, inn: c.i }); });
+  const isTransferCat = (t) => { const c = getCategory(t.categoryId); return !!(c && c.name === "Transfer"); };
+  const oneSided = free.filter((t) => !used.has(t.id) && (isTransferCat(t) || /transfer/i.test(t.description || "")));
+  const byDateDesc = (a, b) => (b.date || "").localeCompare(a.date || "");
+  return {
+    pairs: pairs.sort((a, b) => byDateDesc(a.out, b.out)),
+    broken, likely: likely.sort((a, b) => byDateDesc(a.out, b.out)), oneSided: oneSided.sort(byDateDesc),
+  };
+}
+
+/* The account the note names, if any — "Transfer to Meezan Bank" suggests Meezan. Longest name wins,
+   so "Meezan Mudassar" is preferred over "Meezan" only when the note actually says it. */
+function guessOtherAccount(t) {
+  const text = (t.description || "").toLowerCase();
+  const hits = db.accounts.filter((a) => a.id !== t.accountId && a.name && text.includes(a.name.toLowerCase()));
+  hits.sort((a, b) => b.name.length - a.name.length);
+  return hits.length ? hits[0].id : "";
+}
+
+function renderTransfersView() {
+  const accSel = document.getElementById("trFilterAccount");
+  if (!accSel) return;
+  const prev = accSel.value;
+  accSel.innerHTML = `<option value="">All accounts</option>` + db.accounts.map((a) => `<option value="${a.id}">${a.name} (${(a.bucket || "personal") === "business" ? "Business" : "Personal"})</option>`).join("");
+  accSel.value = db.accounts.some((a) => a.id === prev) ? prev : "";
+  const an = transferAnalysis();
+  const counts = { "personal-personal": 0, "business-business": 0, "business-personal": 0 };
+  an.pairs.forEach((p) => { counts[p.kind] = (counts[p.kind] || 0) + 1; });
+  document.getElementById("trCounts").innerHTML = `<span><strong>${an.pairs.length}</strong> transfer${an.pairs.length === 1 ? "" : "s"}</span>` +
+    `<span>Personal ↔ Personal: ${counts["personal-personal"]}</span><span>Business ↔ Business: ${counts["business-business"]}</span><span>Business ↔ Personal: ${counts["business-personal"]}</span>`;
+
+  const month = document.getElementById("trFilterMonth").value;
+  const acc = accSel.value;
+  const kind = document.getElementById("trFilterKind").value;
+  let rows = an.pairs;
+  if (month) rows = rows.filter((p) => monthKey(p.out.date || "") === month || monthKey(p.inn.date || "") === month);
+  if (acc) rows = rows.filter((p) => p.out.accountId === acc || p.inn.accountId === acc);
+  if (kind) rows = rows.filter((p) => p.kind === kind);
+  const body = document.getElementById("trTableBody");
+  body.innerHTML = rows.length ? rows.map((p) => {
+    const oc = accountCurrency(p.out.accountId), ic = accountCurrency(p.inn.accountId);
+    const note = p.out.description || p.inn.description || "";
+    /* Two columns only, date inside the first, so the amount stays visible on a 375px phone. */
+    return `<tr><td><div class="stmt-muted" style="font-size:12px;">${p.out.date}${p.inn.date !== p.out.date ? ` · arrived ${p.inn.date}` : ""}</div>` +
+      `<span class="tr-side">${accName(p.out.accountId)}${ledgerBadge(p.out.accountId)}</span> → <span class="tr-side">${accName(p.inn.accountId)}${ledgerBadge(p.inn.accountId)}</span>${note ? `<div class="stmt-muted" style="font-size:12px;">${note}</div>` : ""}</td>` +
+      `<td class="amount" style="white-space:nowrap;">${fmtMoney(p.out.amount, oc)}${oc !== ic ? `<div class="stmt-muted" style="font-size:12px;">→ ${fmtMoney(p.inn.amount, ic)}</div>` : ""}</td></tr>`;
+  }).join("") : `<tr><td colspan="2" class="empty-state">${an.pairs.length ? "No transfers match your filters." : "No transfers yet."}</td></tr>`;
+  renderTransferAttention(an);
+}
+
+function renderTransferAttention(an) {
+  const card = document.getElementById("trAttentionCard");
+  const line = (t) => `<div class="tr-issue-line">${t.date} · <strong>${t.type === "expense" ? "out of" : "into"} ${accName(t.accountId)}</strong>${ledgerBadge(t.accountId)} · <strong>${fmtMoney(t.amount, accountCurrency(t.accountId))}</strong> · ${categoryDisplayName(getCategory(t.categoryId))}${t.description ? ` · "${t.description}"` : ""}</div>`;
+  const items = [];
+  an.broken.forEach((b) => items.push(`<div class="tr-issue"><div class="tr-issue-title">Broken transfer — one side is missing</div>${b.rows.map(line).join("")}
+    <div class="tr-issue-actions"><button type="button" class="icon-link" onclick="unmarkBrokenTransfer('${b.id}')">Remove transfer marking</button></div></div>`));
+  an.oneSided.forEach((t) => {
+    const guess = guessOtherAccount(t);
+    const opts = db.accounts.filter((a) => a.id !== t.accountId).map((a) => `<option value="${a.id}" ${a.id === guess ? "selected" : ""}>${a.name} (${(a.bucket || "personal") === "business" ? "Business" : "Personal"})</option>`).join("");
+    items.push(`<div class="tr-issue"><div class="tr-issue-title">Looks like a transfer, but only one side exists</div>${line(t)}
+      <div class="tr-issue-actions">
+        <label>${t.type === "expense" ? "Money went into" : "Money came from"}<select id="trOther-${t.id}"><option value="">Choose account…</option>${opts}</select></label>
+        <label>Date<input type="date" id="trDate-${t.id}" value="${t.date}"></label>
+        <label>Amount on that side<input type="number" step="0.01" min="0" id="trAmt-${t.id}" value="${t.amount}" style="width:130px;"></label>
+        <button type="button" class="primary-btn" onclick="completeOneSided('${t.id}')">Complete this transfer</button>
+        <button type="button" class="icon-link" onclick="dismissTransferSuggestion('${t.id}')">Not a transfer</button>
+      </div></div>`);
+  });
+  an.likely.forEach((p) => items.push(`<div class="tr-issue"><div class="tr-issue-title">Same amount out and in — probably a transfer</div>${line(p.out)}${line(p.inn)}
+    <div class="tr-issue-actions"><button type="button" class="primary-btn" onclick="markLikelyPair('${p.out.id}', '${p.inn.id}')">Mark as transfer</button>
+      <button type="button" class="icon-link" onclick="dismissTransferSuggestion('${p.out.id}', '${p.inn.id}')">Not a transfer</button></div></div>`));
+  card.style.display = items.length ? "" : "none";
+  document.getElementById("trAttentionList").innerHTML = items.join("");
+}
+
+function afterTransferFix() { saveData(); renderTransfersView(); renderDashboard(); renderBusinessView(); renderAccountsView(); renderTransactionsTable(); }
+
+function completeOneSided(txId) {
+  const t = db.transactions.find((x) => x.id === txId);
+  if (!t || t.transferId) return;
+  const otherId = document.getElementById(`trOther-${txId}`).value;
+  const other = getAccount(otherId);
+  if (!other || otherId === t.accountId) { alert(`Choose the account the money ${t.type === "expense" ? "went into" : "came from"}.`); return; }
+  const date = document.getElementById(`trDate-${txId}`).value || t.date;
+  const amount = parseFloat(document.getElementById(`trAmt-${txId}`).value);
+  if (!Number.isFinite(amount) || amount <= 0) { alert("Enter the amount on the other side."); return; }
+  const tc = accountCurrency(t.accountId), oc = accountCurrency(otherId);
+  if (tc === oc && round2(amount) !== round2(t.amount)) { alert(`Both accounts use ${tc}, so the amount must be the same as the original entry (${fmtMoney(t.amount, tc)}).`); return; }
+  const otherType = t.type === "expense" ? "income" : "expense";
+  const otherBucket = other.bucket || "personal";
+  const fromCat = categoryDisplayName(getCategory(t.categoryId));
+  const direction = t.type === "expense" ? `${accName(t.accountId)} → ${other.name}` : `${other.name} → ${accName(t.accountId)}`;
+  if (!confirm(`Complete this transfer?\n\n${direction} · ${fmtMoney(t.amount, tc)} · ${date}\n\nThis adds the ${otherType === "income" ? "money arriving in" : "money leaving"} ${other.name} (${fmtMoney(amount, oc)}), so ${other.name}'s balance ${otherType === "income" ? "goes up" : "goes down"} by that amount.\n\nThe original entry moves from "${fromCat}" to "Transfer" and stops counting as ${t.type === "expense" ? "an expense" : "income"}.`)) return;
+  const transferId = uid();
+  /* Each side belongs to its own account's ledger, exactly like a cross-ledger transfer (3.14). */
+  db.transactions.push({ id: uid(), type: otherType, date, accountId: otherId, categoryId: ensureTransferCategory(otherType, otherBucket), amount, description: t.description || `Transfer: ${direction}`, bucket: otherBucket, transferId });
+  t.transferId = transferId;
+  t.categoryId = ensureTransferCategory(t.type, t.bucket || "personal");
+  logAction("Completed a one-sided transfer", `${direction} · ${fmtMoney(t.amount, tc)} · ${date} · other side added to ${other.name} · original category was ${fromCat}`);
+  afterTransferFix();
+  toast(`Transfer completed: ${direction}`);
+}
+
+function markLikelyPair(outId, inId) {
+  const a = db.transactions.find((t) => t.id === outId), b = db.transactions.find((t) => t.id === inId);
+  if (!a || !b || a.transferId || b.transferId) return;
+  if (!confirm(`Mark these two as one transfer of ${fmtMoney(a.amount, accountCurrency(a.accountId))}?\n\n${accName(a.accountId)} → ${accName(b.accountId)}\n\nThey'll stop counting as income and expense. Both account balances stay exactly as they are.`)) return;
+  const transferId = uid();
+  a.transferId = transferId; b.transferId = transferId;
+  logAction("Marked as transfer", `${fmtMoney(a.amount, accountCurrency(a.accountId))} · ${accName(a.accountId)} ↔ ${accName(b.accountId)} · from the Transfers tab · no longer counts as income or expense`);
+  afterTransferFix();
+  toast("Marked as transfer");
+}
+
+function dismissTransferSuggestion(...ids) {
+  const rows = db.transactions.filter((t) => ids.includes(t.id));
+  if (!rows.length) return;
+  rows.forEach((t) => { t.notTransfer = true; });
+  logAction("Not a transfer", rows.map((t) => `${t.date} ${fmtMoney(t.amount, accountCurrency(t.accountId))} ${accName(t.accountId)}${t.description ? ` "${t.description}"` : ""}`).join(" · "));
+  afterTransferFix();
+  toast("Suggestion dismissed");
+}
+
+/* A lone marked half must never stay marked (4 rule 6) — it would be excluded from totals while
+   nothing balances it. Removing the marking makes it ordinary income/expense again. */
+function unmarkBrokenTransfer(transferId) {
+  const rows = db.transactions.filter((t) => t.transferId === transferId);
+  if (!rows.length) return;
+  if (!confirm(`Remove the transfer marking from ${rows.length === 1 ? "this entry" : "these entries"}?\n\n${rows.length === 1 ? "It" : "They"} will count as ordinary income/expense again. No balance changes.`)) return;
+  rows.forEach((t) => { delete t.transferId; });
+  logAction("Removed broken transfer marking", rows.map((t) => `${t.date} ${fmtMoney(t.amount, accountCurrency(t.accountId))} ${accName(t.accountId)}`).join(" · "));
+  afterTransferFix();
+  toast("Transfer marking removed");
+}
+
+["trFilterMonth", "trFilterAccount", "trFilterKind"].forEach((id) => document.getElementById(id).addEventListener("input", renderTransfersView));
+document.getElementById("trClearFilters").addEventListener("click", () => {
+  document.getElementById("trFilterMonth").value = ""; document.getElementById("trFilterAccount").value = ""; document.getElementById("trFilterKind").value = "";
+  renderTransfersView();
+});
+
 /* ================= BUDGETS ================= */
 let budgetMonth = monthKey(todayISO());
 document.getElementById("budgetPrevMonth").addEventListener("click", () => { budgetMonth = shiftMonth(budgetMonth, -1); renderBudgetsView(); });
@@ -3559,7 +3777,7 @@ function renderCategoriesView() {
 const SHEET_TABS = {
   Categories: ["id", "name", "type", "color", "parentId", "order", "bucket", "excludeFromTotals"],
   Accounts: ["id", "name", "type", "openingBalance", "openingDate", "color", "bucket", "excludeFromBalance", "currency"],
-  Transactions: ["id", "type", "date", "accountId", "categoryId", "amount", "description", "isReconciliation", "bucket", "transferId", "ref", "panel", "credits", "clearedOn"],
+  Transactions: ["id", "type", "date", "accountId", "categoryId", "amount", "description", "isReconciliation", "bucket", "transferId", "ref", "panel", "credits", "clearedOn", "notTransfer"],
   Budgets: ["id", "categoryId", "month", "amount"],
   Reconciliations: ["id", "accountId", "date", "actualBalance", "computedBefore", "diff"],
   Statements: ["id", "accountId", "month", "openingBalance", "closingBalance", "status", "checkedAt"],
@@ -3687,7 +3905,10 @@ function coerceTypesFromSheet(raw) {
     currency: r.currency ? String(r.currency) : settingsCurrency }));
   const transactions = raw.Transactions.filter((r) => r.id).map((r) => ({ id: r.id, type: r.type, date: r.date, accountId: r.accountId, categoryId: r.categoryId, amount: parseFloat(r.amount) || 0, description: r.description || "", isReconciliation: String(r.isReconciliation).toUpperCase() === "TRUE", bucket: r.bucket || "personal", transferId: r.transferId ? String(r.transferId) : "", ref: r.ref ? String(r.ref) : "", panel: r.panel ? String(r.panel) : "", credits: Number(r.credits) > 0 ? Number(r.credits) : 0,
     /* Missing column (a sheet written before Statement Check) yields "" -> not ticked (3.19). */
-    clearedOn: r.clearedOn ? String(r.clearedOn) : "" }));
+    clearedOn: r.clearedOn ? String(r.clearedOn) : "",
+    /* Only present when TRUE, so it fingerprints exactly like a local row that never had it — a
+       "false" here would make every untouched row look edited on its first sync (3.20). */
+    ...(String(r.notTransfer).toUpperCase() === "TRUE" ? { notTransfer: true } : {}) }));
   const budgets = raw.Budgets.filter((r) => r.id).map((r) => ({ id: r.id, categoryId: r.categoryId, month: r.month, amount: parseFloat(r.amount) || 0 }));
   const reconciliations = raw.Reconciliations.filter((r) => r.id).map((r) => ({ id: r.id, accountId: r.accountId, date: r.date, actualBalance: parseFloat(r.actualBalance) || 0, computedBefore: parseFloat(r.computedBefore) || 0, diff: parseFloat(r.diff) || 0 }));
   /* A sheet with no Statements tab yet yields none; the tab is created on the next sync (3.19).
@@ -4240,7 +4461,7 @@ document.getElementById("logClearBtn").addEventListener("click", () => {
 });
 
 /* ================= INIT ================= */
-function renderAll() { renderDashboard(); renderAccountsView(); renderTransactionsView(); renderBudgetsView(); renderYearlyView(); renderBusinessView(); renderCategoriesView(); renderLogsView(); updateSyncUI(); }
+function renderAll() { renderDashboard(); renderAccountsView(); renderTransactionsView(); renderTransfersView(); renderBudgetsView(); renderYearlyView(); renderBusinessView(); renderCategoriesView(); renderLogsView(); updateSyncUI(); }
 
 initCurrencySelect();
 populateAccountSelect(txAccountSelect, false, transactionsLedger);
