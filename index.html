@@ -239,10 +239,11 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
 .tr-counts { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; font-size: 13px; }
 .tr-counts span { background: var(--bg); border-radius: 999px; padding: 3px 10px; }
 .tr-side { white-space: nowrap; }
-/* Transfer statement (3.20a): three columns on a phone, so tighter cells and the account name may wrap. */
-#trTableBody.tr-stmt td, #trTableHead th { padding: 8px 6px; }
-#trTableBody.tr-stmt td:first-child { width: 22px; }
-#trTableBody.tr-stmt .tr-side { white-space: normal; }
+.tr-month { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.tr-month .icon-link { font-size: 22px; padding: 2px 10px; }
+#trKindToggle { margin-bottom: 12px; flex-wrap: wrap; }
+#trSummary { margin-bottom: 8px; }
+#trAttentionCard summary { cursor: pointer; }
 .tr-ledger { font-size: 10px; text-transform: uppercase; letter-spacing: .03em; color: var(--text-muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; margin-left: 4px; }
 .tr-issue { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
 .tr-issue-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: #b45309; margin-bottom: 4px; }
@@ -699,35 +700,30 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
       <header class="view-header">
         <h1>Transfers</h1>
       </header>
-      <div class="card" id="trAttentionCard" style="display:none;">
-        <h2>Needs attention</h2>
-        <p class="hint">Entries that look like a transfer but aren't recorded as one. Nothing changes unless you press a button.</p>
-        <div id="trAttentionList"></div>
-      </div>
       <div class="card">
-        <h2 id="trListTitle">All transfers</h2>
-        <p class="hint" id="trListHint"></p>
-        <div class="tr-counts" id="trCounts"></div>
-        <div class="tx-filters">
+        <div class="tr-month">
+          <button type="button" class="icon-link" id="trPrevMonth" aria-label="Previous month">‹</button>
           <input type="month" id="trFilterMonth">
-          <select id="trFilterAccount"></select>
-          <select id="trFilterKind">
-            <option value="">All kinds</option>
-            <option value="personal-personal">Personal ↔ Personal</option>
-            <option value="business-business">Business ↔ Business</option>
-            <option value="business-personal">Business ↔ Personal</option>
-          </select>
-          <button type="button" id="trClearFilters" class="icon-link">Clear</button>
-          <button type="button" id="trDownloadCsv" class="icon-link">Download CSV</button>
+          <button type="button" class="icon-link" id="trNextMonth" aria-label="Next month">›</button>
         </div>
-        <div class="stmt-summary" id="trSummary" style="display:none;"></div>
+        <div class="ledger-toggle" id="trKindToggle">
+          <button type="button" class="ledger-btn active" data-kind="business-personal">Business ↔ Personal</button>
+          <button type="button" class="ledger-btn" data-kind="personal-personal">Personal ↔ Personal</button>
+        </div>
+        <div class="stmt-summary" id="trSummary"></div>
         <div class="table-wrap">
           <table class="tx-table">
-            <thead id="trTableHead"></thead>
+            <thead><tr><th>Transfer</th><th class="right">Amount</th></tr></thead>
             <tbody id="trTableBody"></tbody>
           </table>
         </div>
+        <button type="button" id="trDownloadCsv" class="icon-link">Download CSV</button>
       </div>
+      <details class="card" id="trAttentionCard" style="display:none;">
+        <summary><strong id="trAttentionTitle">Check for missing transfers</strong></summary>
+        <p class="hint">Optional. Entries that look like a transfer but aren't recorded as one. Nothing changes unless you press a button.</p>
+        <div id="trAttentionList"></div>
+      </details>
     </section>
 
     <!-- BUDGETS -->
@@ -3175,9 +3171,9 @@ const ledgerOf = (accountId) => ((getAccount(accountId) || {}).bucket || "person
 const ledgerBadge = (accountId) => `<span class="tr-ledger">${ledgerOf(accountId) === "business" ? "Business" : "Personal"}</span>`;
 const accName = (id) => (getAccount(id) || {}).name || "?";
 const daysApart = (a, b) => Math.abs((new Date(a) - new Date(b)) / 864e5);
-/* What the list shows right now, so Download CSV exports exactly that. */
-let trCurrentRows = { acc: "", rows: [] };
-
+/* The tab's two settings (3.20) and what the list shows right now, so Download CSV exports exactly that. */
+let trKind = "business-personal", trMonth = "";
+let trCurrentRows = [];
 function transferAnalysis() {
   const groups = new Map();
   db.transactions.forEach((t) => { if (t.transferId) { if (!groups.has(t.transferId)) groups.set(t.transferId, []); groups.get(t.transferId).push(t); } });
@@ -3216,121 +3212,67 @@ function guessOtherAccount(t) {
   return hits.length ? hits[0].id : "";
 }
 
+/* Section 3.20: one month, one of two kinds, oldest first, with a total per direction. */
 function renderTransfersView() {
-  const accSel = document.getElementById("trFilterAccount");
-  if (!accSel) return;
-  const prev = accSel.value;
-  accSel.innerHTML = `<option value="">All accounts</option>` + db.accounts.map((a) => `<option value="${a.id}">${a.name} (${(a.bucket || "personal") === "business" ? "Business" : "Personal"})</option>`).join("");
-  accSel.value = db.accounts.some((a) => a.id === prev) ? prev : "";
+  const monthInput = document.getElementById("trFilterMonth");
+  if (!monthInput) return;
+  if (!trMonth) trMonth = monthKey(todayISO());
+  monthInput.value = trMonth;
+  document.querySelectorAll("#trKindToggle .ledger-btn").forEach((b) => b.classList.toggle("active", b.dataset.kind === trKind));
   const an = transferAnalysis();
-  const counts = { "personal-personal": 0, "business-business": 0, "business-personal": 0 };
-  an.pairs.forEach((p) => { counts[p.kind] = (counts[p.kind] || 0) + 1; });
-  document.getElementById("trCounts").innerHTML = `<span><strong>${an.pairs.length}</strong> transfer${an.pairs.length === 1 ? "" : "s"}</span>` +
-    `<span>Personal ↔ Personal: ${counts["personal-personal"]}</span><span>Business ↔ Business: ${counts["business-business"]}</span><span>Business ↔ Personal: ${counts["business-personal"]}</span>`;
+  const rows = an.pairs.filter((p) => p.kind === trKind && monthKey(p.out.date || "") === trMonth)
+    .sort((a, b) => (a.out.date || "").localeCompare(b.out.date || "") || String(a.out.id).localeCompare(String(b.out.id)));
+  trCurrentRows = rows;
 
-  const month = document.getElementById("trFilterMonth").value;
-  const acc = accSel.value;
-  const kind = document.getElementById("trFilterKind").value;
-  let rows = an.pairs;
-  if (month) rows = rows.filter((p) => monthKey(p.out.date || "") === month || monthKey(p.inn.date || "") === month);
-  if (acc) rows = rows.filter((p) => p.out.accountId === acc || p.inn.accountId === acc);
-  if (kind) rows = rows.filter((p) => p.kind === kind);
-  const body = document.getElementById("trTableBody");
-  const head = document.getElementById("trTableHead");
-  const summary = document.getElementById("trSummary");
-  const empty = an.pairs.length ? "No transfers match your filters." : "No transfers yet.";
-  body.classList.toggle("tr-stmt", !!acc);
-  const tick = (t) => (t.clearedOn ? `<span class="cleared-tick" title="Ticked on the ${monthLabel(t.clearedOn)} statement">✓</span>` : "");
-  if (acc) {
-    /* Statement mode (3.20a): this account's half of each pair, oldest first. In the month filter the
-       account's own side date decides, as on its bank statement. */
-    let srows = rows.map((p) => (p.out.accountId === acc ? { side: p.out, other: p.inn } : { side: p.inn, other: p.out }));
-    if (month) srows = srows.filter((r) => monthKey(r.side.date || "") === month);
-    srows.sort((a, b) => (a.side.date || "").localeCompare(b.side.date || "") || String(a.side.id).localeCompare(String(b.side.id)));
-    trCurrentRows = { acc, srows };
-    const cur = accountCurrency(acc);
-    const outs = srows.filter((r) => r.side.type === "expense"), ins = srows.filter((r) => r.side.type === "income");
-    const outTot = round2(outs.reduce((n, r) => n + r.side.amount, 0)), inTot = round2(ins.reduce((n, r) => n + r.side.amount, 0));
-    const net = round2(inTot - outTot);
-    document.getElementById("trListTitle").textContent = `${accName(acc)} — transfer statement`;
-    document.getElementById("trListHint").textContent = `Every transfer in or out of ${accName(acc)}, oldest first. Tick each one you find on your bank statement — these are the same ticks as this account's Statement check. Ticking never changes a balance.`;
-    summary.style.display = "";
-    summary.innerHTML = `<span>Transfers out (${outs.length})</span><span class="amount expense">-${fmtMoney(outTot, cur)}</span>` +
-      `<span>Transfers in (${ins.length})</span><span class="amount income">+${fmtMoney(inTot, cur)}</span>` +
-      `<span><strong>Net</strong></span><span class="amount"><strong>${net >= 0 ? "+" : "-"}${fmtMoney(Math.abs(net), cur)}</strong></span>` +
-      `<span class="stmt-muted">Ticked</span><span class="amount stmt-muted">${srows.filter((r) => r.side.clearedOn).length} of ${srows.length}</span>`;
-    head.innerHTML = `<tr><th></th><th>Transfer</th><th class="right">Amount</th></tr>`;
-    /* Date inside the transfer cell, as in the all-accounts list, so the amount fits a 375px phone. */
-    body.innerHTML = srows.length ? srows.map(({ side, other }) => {
-      const isOut = side.type === "expense";
-      const note = side.description || other.description || "";
-      return `<tr class="${side.clearedOn ? "" : "stmt-row-off"}"><td><input type="checkbox" ${side.clearedOn ? "checked" : ""} onchange="toggleTransferTick('${side.id}', this.checked)" title="Tick if this transfer is on the ${accName(acc)} bank statement"></td>` +
-        `<td><div class="stmt-muted tr-date" style="font-size:12px;">${side.date}</div><span class="tr-side">${isOut ? "To" : "From"} <strong>${accName(other.accountId)}</strong>${ledgerBadge(other.accountId)}</span>${note ? `<div class="stmt-muted" style="font-size:12px;">${note}</div>` : ""}</td>` +
-        `<td class="amount ${side.type}" style="white-space:nowrap;">${isOut ? "-" : "+"}${fmtMoney(side.amount, cur)}</td></tr>`;
-    }).join("") : `<tr><td colspan="3" class="empty-state">${empty}</td></tr>`;
+  /* Totals in the default currency only; another currency is listed but can't be added to it. */
+  const base = db.settings.currency;
+  const sumOf = (list) => { const same = list.filter((p) => accountCurrency(p.out.accountId) === base); return { n: list.length, total: round2(same.reduce((n, p) => n + p.out.amount, 0)), skipped: list.length - same.length }; };
+  const line = (label, x) => `<span>${label} (${x.n})</span><span class="amount"><strong>${fmtMoney(x.total, base)}</strong></span>`;
+  let summary, skipped;
+  if (trKind === "business-personal") {
+    const toPers = sumOf(rows.filter((p) => ledgerOf(p.out.accountId) === "business"));
+    const toBiz = sumOf(rows.filter((p) => ledgerOf(p.out.accountId) === "personal"));
+    summary = line("Business → Personal", toPers) + line("Personal → Business", toBiz);
+    skipped = toPers.skipped + toBiz.skipped;
   } else {
-    trCurrentRows = { acc: "", rows };
-    document.getElementById("trListTitle").textContent = "All transfers";
-    document.getElementById("trListHint").textContent = "Money moved between your own accounts — both sides on one line, Personal and Business together. None of these count as income or expense. Choose an account to see its transfer statement and tick entries off. To add a transfer, use the Transfer form on the Transactions tab (same side) or on the Accounts tab (Business ↔ Personal).";
-    summary.style.display = "none";
-    head.innerHTML = `<tr><th>Transfer</th><th class="right">Amount</th></tr>`;
-    body.innerHTML = rows.length ? rows.map((p) => {
-      const oc = accountCurrency(p.out.accountId), ic = accountCurrency(p.inn.accountId);
-      const note = p.out.description || p.inn.description || "";
-      /* Two columns only, date inside the first, so the amount stays visible on a 375px phone. */
-      return `<tr><td><div class="stmt-muted" style="font-size:12px;">${p.out.date}${p.inn.date !== p.out.date ? ` · arrived ${p.inn.date}` : ""}</div>` +
-        `<span class="tr-side">From <strong>${accName(p.out.accountId)}</strong>${ledgerBadge(p.out.accountId)}${tick(p.out)}</span> → <span class="tr-side">To <strong>${accName(p.inn.accountId)}</strong>${ledgerBadge(p.inn.accountId)}${tick(p.inn)}</span>${note ? `<div class="stmt-muted" style="font-size:12px;">${note}</div>` : ""}</td>` +
-        `<td class="amount" style="white-space:nowrap;">${fmtMoney(p.out.amount, oc)}${oc !== ic ? `<div class="stmt-muted" style="font-size:12px;">→ ${fmtMoney(p.inn.amount, ic)}</div>` : ""}</td></tr>`;
-    }).join("") : `<tr><td colspan="2" class="empty-state">${empty}</td></tr>`;
+    const all = sumOf(rows);
+    summary = line("Moved between personal accounts", all);
+    skipped = all.skipped;
   }
-  renderTransferAttention(an);
-}
+  if (skipped) summary += `<span class="stmt-muted" style="grid-column:1/-1;">${skipped} transfer${skipped === 1 ? "" : "s"} in another currency listed below but not in the total</span>`;
+  document.getElementById("trSummary").innerHTML = summary;
 
-/* The same tick as Statement Check (3.20a): clearedOn on this account's half, for its own month. */
-function toggleTransferTick(txId, checked) {
-  const t = db.transactions.find((x) => x.id === txId);
-  if (!t || !t.date) return;
-  const m = monthKey(t.date);
-  ensureStatement(t.accountId, m);
-  if (checked) t.clearedOn = m; else delete t.clearedOn;
-  saveData(); renderTransfersView(); renderAccountsView();
+  document.getElementById("trTableBody").innerHTML = rows.length ? rows.map((p) => {
+    const oc = accountCurrency(p.out.accountId), ic = accountCurrency(p.inn.accountId);
+    const note = p.out.description || p.inn.description || "";
+    /* Two columns only, date inside the first, so the amount stays visible on a 375px phone. */
+    return `<tr><td><div class="stmt-muted" style="font-size:12px;">${p.out.date}${p.inn.date !== p.out.date ? ` · arrived ${p.inn.date}` : ""}</div>` +
+      `<span class="tr-side"><strong>${accName(p.out.accountId)}</strong>${ledgerBadge(p.out.accountId)}</span> → <span class="tr-side"><strong>${accName(p.inn.accountId)}</strong>${ledgerBadge(p.inn.accountId)}</span>${note ? `<div class="stmt-muted" style="font-size:12px;">${note}</div>` : ""}</td>` +
+      `<td class="amount" style="white-space:nowrap;">${fmtMoney(p.out.amount, oc)}${oc !== ic ? `<div class="stmt-muted" style="font-size:12px;">→ ${fmtMoney(p.inn.amount, ic)}</div>` : ""}</td></tr>`;
+  }).join("") : `<tr><td colspan="2" class="empty-state">No ${trKind === "business-personal" ? "Business ↔ Personal" : "Personal ↔ Personal"} transfers in ${monthLabel(trMonth)}.</td></tr>`;
+  renderTransferAttention(an);
 }
 
 /* A note is user text, so it is quoted (RFC 4180) and a leading = + - @ is neutralised — a spreadsheet
    would otherwise run it as a formula. A plain number such as -10120.00 is left alone. */
 const csvCell = (v) => { let s = String(v == null ? "" : v); if (/^[=+\-@]/.test(s) && !/^-?\d+(\.\d+)?$/.test(s)) s = "'" + s; return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
-const ledgerName = (accountId) => (ledgerOf(accountId) === "business" ? "Business" : "Personal");
 
 function transfersCsv() {
-  const lines = [];
-  if (trCurrentRows.acc) {
-    const acc = trCurrentRows.acc;
-    lines.push(["Date", "Direction", "From", "From ledger", "To", "To ledger", "Amount", "Currency", "Note", "Ticked"]);
-    trCurrentRows.srows.forEach(({ side, other }) => {
-      const isOut = side.type === "expense", from = isOut ? side : other, to = isOut ? other : side;
-      lines.push([side.date, isOut ? "Out" : "In", accName(from.accountId), ledgerName(from.accountId), accName(to.accountId), ledgerName(to.accountId),
-        (isOut ? -side.amount : side.amount).toFixed(2), accountCurrency(acc), side.description || other.description || "", side.clearedOn ? "Yes" : ""]);
-    });
-  } else {
-    lines.push(["Date", "From", "From ledger", "To", "To ledger", "Amount", "Currency", "Note"]);
-    trCurrentRows.rows.forEach((p) => lines.push([p.out.date, accName(p.out.accountId), ledgerName(p.out.accountId), accName(p.inn.accountId), ledgerName(p.inn.accountId),
-      Number(p.out.amount).toFixed(2), accountCurrency(p.out.accountId), p.out.description || p.inn.description || ""]));
-  }
+  const lines = [["Date", "From", "To", "Amount", "Currency", "Note"]];
+  trCurrentRows.forEach((p) => lines.push([p.out.date, accName(p.out.accountId), accName(p.inn.accountId),
+    Number(p.out.amount).toFixed(2), accountCurrency(p.out.accountId), p.out.description || p.inn.description || ""]));
   return lines.map((r) => r.map(csvCell).join(",")).join("\r\n");
 }
 
 document.getElementById("trDownloadCsv").addEventListener("click", () => {
-  const month = document.getElementById("trFilterMonth").value || "all";
-  const who = trCurrentRows.acc ? accName(trCurrentRows.acc).replace(/[^\w-]+/g, "-") : "all";
   /* BOM so Excel reads the Rs/₹ symbols and Urdu notes as UTF-8. */
-  const blob = new Blob(["﻿" + transfersCsv()], { type: "text/csv;charset=utf-8" });
+  const blob = new Blob(["\ufeff" + transfersCsv()], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url; a.download = `transfers-${who}-${month}.csv`; a.click();
+  a.href = url; a.download = `transfers-${trKind}-${trMonth}.csv`; a.click();
   URL.revokeObjectURL(url);
   toast("Transfer list downloaded");
 });
-
 function renderTransferAttention(an) {
   const card = document.getElementById("trAttentionCard");
   const line = (t) => `<div class="tr-issue-line">${t.date} · <strong>${t.type === "expense" ? "out of" : "into"} ${accName(t.accountId)}</strong>${ledgerBadge(t.accountId)} · <strong>${fmtMoney(t.amount, accountCurrency(t.accountId))}</strong> · ${categoryDisplayName(getCategory(t.categoryId))}${t.description ? ` · "${t.description}"` : ""}</div>`;
@@ -3353,6 +3295,7 @@ function renderTransferAttention(an) {
     <div class="tr-issue-actions"><button type="button" class="primary-btn" onclick="markLikelyPair('${p.out.id}', '${p.inn.id}')">Mark as transfer</button>
       <button type="button" class="icon-link" onclick="dismissTransferSuggestion('${p.out.id}', '${p.inn.id}')">Not a transfer</button></div></div>`));
   card.style.display = items.length ? "" : "none";
+  document.getElementById("trAttentionTitle").textContent = `Check for missing transfers (${items.length})`;
   document.getElementById("trAttentionList").innerHTML = items.join("");
 }
 
@@ -3416,11 +3359,10 @@ function unmarkBrokenTransfer(transferId) {
   toast("Transfer marking removed");
 }
 
-["trFilterMonth", "trFilterAccount", "trFilterKind"].forEach((id) => document.getElementById(id).addEventListener("input", renderTransfersView));
-document.getElementById("trClearFilters").addEventListener("click", () => {
-  document.getElementById("trFilterMonth").value = ""; document.getElementById("trFilterAccount").value = ""; document.getElementById("trFilterKind").value = "";
-  renderTransfersView();
-});
+document.getElementById("trFilterMonth").addEventListener("input", (e) => { if (e.target.value) { trMonth = e.target.value; renderTransfersView(); } });
+document.getElementById("trPrevMonth").addEventListener("click", () => { trMonth = shiftMonth(trMonth || monthKey(todayISO()), -1); renderTransfersView(); });
+document.getElementById("trNextMonth").addEventListener("click", () => { trMonth = shiftMonth(trMonth || monthKey(todayISO()), 1); renderTransfersView(); });
+document.querySelectorAll("#trKindToggle .ledger-btn").forEach((b) => b.addEventListener("click", () => { trKind = b.dataset.kind; renderTransfersView(); }));
 
 /* ================= BUDGETS ================= */
 let budgetMonth = monthKey(todayISO());

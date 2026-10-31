@@ -102,34 +102,29 @@ The app will refuse if the two don't make sense as a transfer — if they're not
 
 ## 4b. The Transfers Tab — See Every Transfer in One Place
 
-The Transactions tab shows Personal *or* Business, never both, so a transfer between business and personal is split across two screens. The **Transfers** tab (in the menu, under Transactions) shows **every** transfer on one list — Personal ↔ Personal, Business ↔ Business and Business ↔ Personal — with both sides on one line: date, from-account → to-account, amount and note.
+A transfer moves money from one pocket to another. It changes the two balances but is **never** counted as income or expense.
 
-- Filter by **month**, **account** (either side) or **kind**. The counts at the top show how many of each kind you have.
-- This tab is for **looking**. To make a new transfer, keep using the Transfer form on the **Transactions** tab (same side) or the **Accounts** tab (Business ↔ Personal) — they work exactly as before.
+- **Business → Personal** (two separate pockets): use the Transfer form on the **Accounts** tab.
+- **Personal → Personal** (same pocket): use the Transfer form on the **Transactions** tab.
+- What you then spend (school fees, a lunch bill…) you enter as a normal personal expense.
 
-### "Needs attention"
+The **Transfers** tab (in the menu, under Transactions) is only for **looking back**, month by month:
 
-When something looks wrong, a box appears at the top. Nothing changes unless you press a button.
+1. Pick the **month** with ‹ ›.
+2. Press **Business ↔ Personal** or **Personal ↔ Personal**.
+3. You see every transfer of that kind in that month: date, from → to, amount, note. The total sits at the top. For Business ↔ Personal it shows **Business → Personal** and **Personal → Business** separately.
+
+**Download CSV** saves that list as a file for Excel or Google Sheets. To check *balances* against the bank, use **Statement check** on the Accounts tab.
+
+### "Check for missing transfers" (optional, at the bottom)
+
+A closed section at the bottom of the tab. Open it only if you think a transfer was entered as an ordinary expense or income, or only one side was entered. Nothing changes unless you press a button.
 
 - **"Looks like a transfer, but only one side exists"** — for example, money recorded leaving BAF with the note "Transfer to Meezan Bank", but nothing arriving in Meezan. Pick the account it went into (the app guesses from the note), check the date, and press **Complete this transfer**. The app adds the arriving side and links the two. The original entry stops counting as an expense, and the receiving account's balance goes up by that amount. **Check your bank statement first** — if the money is already included somewhere else (for example in an opening balance), completing it would count it twice.
 - **"Same amount out and in — probably a transfer"** — the same amount left one account and arrived in another within 3 days, but they were entered as two ordinary entries. **Mark as transfer** links them: balances don't change, but they stop inflating your income and expenses.
 - **"Broken transfer"** — one side of a transfer was lost. **Remove transfer marking** makes the remaining entry an ordinary one again.
 - **Not a transfer** — if a suggestion is wrong (say a freelance payment whose note says "transfer"), press this and it never shows again.
 
-### Transfer statement for one account
-
-To check one account's transfers against its bank statement:
-
-1. On the Transfers tab, choose the **account** (for example Meezan) and the **month**.
-2. The list becomes **Meezan — transfer statement**, oldest first, like a bank statement:
-   - **"To Cash" −100,000** means money went **out** of Meezan into Cash.
-   - **"From BAF" +4,940** means money came **in** to Meezan from BAF.
-3. At the top you'll see **Transfers out**, **Transfers in** and **Net** for that month.
-4. Tick ✓ each transfer you find on your bank statement. A transfer left unticked is in the app but not on the bank statement, so check it.
-
-The ticks are the **same ticks** as the account's **Statement check** on the Accounts tab. Tick it in one place and it shows as ticked in the other. Ticking never changes any balance.
-
-**Download CSV** saves the list you're looking at as a file you can open in Excel or Google Sheets.
 
 ---
 
