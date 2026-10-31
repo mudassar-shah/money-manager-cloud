@@ -116,6 +116,21 @@ When something looks wrong, a box appears at the top. Nothing changes unless you
 - **"Broken transfer"** — one side of a transfer was lost. **Remove transfer marking** makes the remaining entry an ordinary one again.
 - **Not a transfer** — if a suggestion is wrong (say a freelance payment whose note says "transfer"), press this and it never shows again.
 
+### Transfer statement for one account
+
+To check one account's transfers against its bank statement:
+
+1. On the Transfers tab, choose the **account** (for example Meezan) and the **month**.
+2. The list becomes **Meezan — transfer statement**, oldest first, like a bank statement:
+   - **"To Cash" −100,000** means money went **out** of Meezan into Cash.
+   - **"From BAF" +4,940** means money came **in** to Meezan from BAF.
+3. At the top you'll see **Transfers out**, **Transfers in** and **Net** for that month.
+4. Tick ✓ each transfer you find on your bank statement. A transfer left unticked is in the app but not on the bank statement, so check it.
+
+The ticks are the **same ticks** as the account's **Statement check** on the Accounts tab. Tick it in one place and it shows as ticked in the other. Ticking never changes any balance.
+
+**Download CSV** saves the list you're looking at as a file you can open in Excel or Google Sheets.
+
 ---
 
 ## 5. Fixing Mistakes

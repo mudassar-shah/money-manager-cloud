@@ -632,6 +632,29 @@ Actions:
 
 Every action is logged and saved like any other change. Nothing is ever changed without the button press.
 
+### 3.20a Transfer statement — one account's transfers, ticked off like a bank statement
+
+**Why.** The user found the all-accounts list hard to read and wanted, per account, a statement of *which transfer, on which date, from which account to which* — to check against the bank statement the same way Statement Check (3.19) does for all entries.
+
+**Mode.** Choosing an account in the Transfers tab's account filter turns the list into that account's **transfer statement**; "All accounts" shows the overall list (3.20). The month and kind filters still apply. The card heading becomes "{Account} — transfer statement".
+
+**Rows** — one per complete pair that touches the account, using **this account's half** (`side`):
+```
+side    = the pair's row whose accountId is the chosen account
+date    = side.date            (month filter matches side.date)
+details = "To {other account}" if side is the expense, "From {other account}" if the income,
+          with the other account's ledger badge and the note
+amount  = −side.amount (out) / +side.amount (in), in this account's currency
+order   = oldest first (like a bank statement)
+```
+**Summary** above the rows: Transfers out (count, total), Transfers in (count, total), Net (= in − out), Ticked x of y.
+
+**Ticks are the same ticks as Statement Check.** Ticking a row sets `side.clearedOn = monthKey(side.date)` and makes sure a statement record exists for that account and month (`ensureStatement`) — exactly what ticking that entry in the account's Statement Check does, so a tick made in either place shows in both. Unticking deletes `side.clearedOn`. Only this account's half is ticked; the other half is ticked on the other account's statement. No new field: ticks remain metadata only (3.19), and no balance, total or report changes. Unticking an entry in a finished month makes that month show ⚠ changed since matched (3.19), as it would from Statement Check.
+
+**All-accounts list** shows, for each half, a ✓ after the account name when that half is ticked (read-only there — ticks need an account, since each half belongs to one statement).
+
+**Download CSV** exports the rows currently shown (either mode): Date, From, From ledger, To, To ledger, Amount, Currency, Note, plus Direction and Ticked in statement mode. File name `transfers-{account or all}-{month or all}.csv`. Fields are quoted per RFC 4180 and a leading `= + - @` is prefixed with `'` so a spreadsheet never runs a note as a formula (plain numbers such as `-10120.00` are left as they are).
+
 ## 4. Business Rules / Invariants (must hold at all times)
 
 1. A category with subcategories cannot itself have a `parentId` (Section 2.1).
@@ -786,6 +809,13 @@ When a new field is added to categories, accounts, or transactions (like `parent
 - A same-amount out/in pair 1 day apart is a likely pair; **Mark** leaves both balances byte-identical and removes the amount from income and expense. A pair 4 days apart, or of different amounts, is not suggested. A reconciliation adjustment is never suggested.
 - **Not a transfer** hides a suggestion permanently (survives sync). A broken (lone) half is listed and **Remove transfer marking** returns it to ordinary income/expense.
 - The new tab fits a 375px screen with no horizontal page scroll.
+
+**8.33 Transfer statement (Section 3.20a)**:
+- Choosing an account lists only pairs touching it, oldest first, "To X" for its out-half and "From X" for its in-half, signed amounts; out/in/net totals equal the sums of the listed rows; month filter uses this account's side date.
+- Ticking a row sets `clearedOn` on **this account's half only** (the other half untouched) and the same entry shows ticked in that account's Statement Check for that month; ticking in Statement Check shows here. Unticking removes it.
+- **No balance moves**: every account balance and Dashboard figure byte-identical before and after ticking.
+- CSV: correct header and row count for each mode; a note starting with `=` is exported with a leading `'`; commas and quotes are quoted.
+- Fits a 375px screen with no horizontal page scroll.
 
 **8.31 Statement Check (Section 3.19)** — the risk is a wrong "matched", so test the refusal paths as hard as the happy path:
 - **Round-trip first (8.7)**: `clearedOn` and every `Statements` column survive write → Sheet → read; an **old Sheet without `clearedOn` or without a `Statements` tab** loads with `clearedOn` empty and no statements, and the next sync creates the tab.
@@ -1022,6 +1052,10 @@ This mobile layout work applies to the **Cloud** copy first, since that's the on
 ---
 
 ## Change Log
+
+- **2026-10-31 (Transfer statement — per-account transfers, ticked like a bank statement)** — User found the Transfers list confusing and wanted, per account, which transfers were made, when, from where to where, to reconcile them. Added Section 3.20a: choosing an account on the Transfers tab shows its transfer statement (To/From, signed amounts, out/in/net totals, oldest first) with a tick per row that is the same `clearedOn` tick as Statement Check (no new field, no balance change), plus Download CSV for either view. Tests: Section 8.33.
+  - **Verified** by a 28-check headless-Chrome suite (8.33): rows, order, To/From, totals and month filter; a tick sets `clearedOn` on the chosen account's half only and shows in Statement Check (and the reverse); balances byte-identical; CSV quoting and formula-guard. Found and fixed during testing: the formula guard was also prefixing negative amounts with `'`. Transfers (36), Statement Check (32) and sync (16) suites still all pass.
+  - **Phone layout**: three columns (tick · transfer with the date inside · amount), tighter cells, account name may wrap; measured at 375px — page and table both fit with no horizontal scroll.
 
 - **2026-10-31 (Transfers tab — see every transfer, find the broken ones)** — User suspected a missing entry from a transfer and wanted to *see* transfers across both ledgers; the existing transfer forms stay exactly as they were. Added a **Transfers** nav tab (Section 3.20): all complete pairs on one list with month / account / kind filters, plus a Needs attention box for broken pairs, one-sided transfers and likely unmarked pairs, each with an explicit fix. New `notTransfer` field on Transaction (added to `SHEET_TABS` and `coerceTypesFromSheet`, Section 6) so a dismissed suggestion stays dismissed. A read-only scan of the live Sheet beforehand found the Rs 500,000 BAF → Meezan entry of 2026-07-25 recorded as a business expense with no receiving side — the likely missing entry — which the user can now complete from the tab after confirming against the Meezan statement.
   - **Verified** by a 36-check headless-Chrome suite (Section 8.32) on a fixture mirroring the live data: 4 pairs listed once each with kinds counted regardless of direction; the 500,000 found as one-sided with Meezan (not "Meezan Mudassar") guessed from the note; a mismatched same-currency amount refused; completing it adds a personal income of exactly 500,000 to Meezan on the same date, moves the original to the business Transfer category, lowers July business expenses by exactly 500,000, raises Meezan by exactly 500,000 and leaves BAF unchanged; the 1-day 5,307 pair suggested while 4-days-apart, different-amount and reconciliation-adjustment rows are not; Mark leaves every balance byte-identical and removes 5,307 from both income and expense; Not a transfer persists through an edit and a sync; a lone half is reported and unmarked. Sync: an old Sheet without the `notTransfer` column syncs with **nothing to change** (no false edits), and a second sync after a dismissal also reports nothing. Statement Check (32) and sync-safety (16) suites still pass in full.
