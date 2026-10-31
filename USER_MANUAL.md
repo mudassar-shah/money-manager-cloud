@@ -116,16 +116,6 @@ The **Transfers** tab (in the menu, under Transactions) is only for **looking ba
 
 **Download CSV** saves that list as a file for Excel or Google Sheets. To check *balances* against the bank, use **Statement check** on the Accounts tab.
 
-### "Check for missing transfers" (optional, at the bottom)
-
-A closed section at the bottom of the tab. Open it only if you think a transfer was entered as an ordinary expense or income, or only one side was entered. Nothing changes unless you press a button.
-
-- **"Looks like a transfer, but only one side exists"** — for example, money recorded leaving BAF with the note "Transfer to Meezan Bank", but nothing arriving in Meezan. Pick the account it went into (the app guesses from the note), check the date, and press **Complete this transfer**. The app adds the arriving side and links the two. The original entry stops counting as an expense, and the receiving account's balance goes up by that amount. **Check your bank statement first** — if the money is already included somewhere else (for example in an opening balance), completing it would count it twice.
-- **"Same amount out and in — probably a transfer"** — the same amount left one account and arrived in another within 3 days, but they were entered as two ordinary entries. **Mark as transfer** links them: balances don't change, but they stop inflating your income and expenses.
-- **"Broken transfer"** — one side of a transfer was lost. **Remove transfer marking** makes the remaining entry an ordinary one again.
-- **Not a transfer** — if a suggestion is wrong (say a freelance payment whose note says "transfer"), press this and it never shows again.
-
-
 ---
 
 ## 5. Fixing Mistakes
@@ -607,7 +597,7 @@ This is now fixed — picking a main category shows all entries under its subcat
 It already does — no extra setup needed (Section 6).
 
 **"I think a transfer is missing — money left one account but never arrived in the other."**
-Open the **Transfers** tab. If it's listed under *Needs attention → only one side exists*, confirm it on your bank statement and press **Complete this transfer** (Section 4b).
+Open the **Transfers** tab, pick the month and the kind, and compare the list with your bank statement. If a transfer is missing, add it with the Transfer form: **Accounts** tab for Business ↔ Personal, **Transactions** tab for Personal ↔ Personal (Section 4b).
 
 **"I took cash out of my bank and now my Income looks higher than what I actually earned."**
 That's what the Transfer form is for (Section 4a). Use **Mark as Transfer** on the two entries you already made to fix it, including for past months.

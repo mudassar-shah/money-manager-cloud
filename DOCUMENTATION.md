@@ -628,23 +628,7 @@ Download CSV   the rows shown: Date, From, To, Amount, Currency, Note.
                RFC 4180; a text cell starting = + - @ is prefixed with ' (plain numbers left alone).
 ```
 Business ↔ Business transfers (e.g. HBL → BAF) are not one of the two options and are not listed; they stay visible on the Transactions tab (Business) as before.
-**Check for missing transfers** — a collapsed section at the bottom of the tab, closed by default, its heading showing how many items it has (hidden when there are none). It holds the same checks as before:
-```
-Broken transfer  = a transferId shared by ≠ 2 rows, or by 2 rows of the same type
-One-sided        = no transferId, not notTransfer, not isReconciliation,
-                   AND (category name is "Transfer" OR description contains "transfer"),
-                   AND not part of a likely pair below
-Likely pair      = expense e and income i, both without transferId / notTransfer / isReconciliation,
-                   different accounts, same currency, equal amounts, dates ≤ 3 days apart.
-                   Matched greedily, closest dates first; each row joins at most one pair.
-```
-Actions:
-- **Broken → Remove transfer marking** — deletes `transferId` from the remaining row(s), so it counts as ordinary income/expense again (4 rule 6: a lone half must never stay marked).
-- **One-sided → Complete this transfer** — the user picks the other account, the date (defaults to the entry's) and, if the currencies differ, the amount on the other side. The app adds the opposite row on that account (`bucket` = *that account's* ledger, exactly like a cross-ledger transfer, 3.14), links both with a new `transferId`, and moves the original to the `Transfer` category of its own ledger; the old category is recorded in the log. Effect: the original stops counting as income/expense, and the other account's balance changes by the amount.
-- **Likely pair → Mark as transfer** — the same rule as the Transactions-tab bulk action (3.10): both rows get one `transferId`; categories, amounts, dates and balances unchanged; they stop counting as income/expense.
-- **Not a transfer** — sets `notTransfer` on the row(s) so the suggestion never comes back.
-
-Every action is logged and saved like any other change. Nothing is ever changed without the button press.
+**No suggestions or fixes on this tab (removed 2026-10-31 at the user's request).** The first version also detected one-sided transfers, likely unmarked pairs and broken halves, with buttons to fix them; the user found that confusing and did not want it. The tab now only lists. The `notTransfer` field stays in the data and the Sheet schema (2.3) so existing rows keep loading and syncing unchanged, but nothing sets it any more.
 
 ## 4. Business Rules / Invariants (must hold at all times)
 
@@ -793,16 +777,12 @@ When a new field is added to categories, accounts, or transactions (like `parent
 
 **8.16 Total Balance moved to Accounts** — confirm the Dashboard has exactly 4 stat cards (Income, Expenses, Net This Month, Savings Rate) and no Total Balance card anywhere on it; confirm the Accounts tab's "Your Accounts" card shows "Total Balance (Personal)" matching the sum of personal accounts' `accountCurrentBalance`, and that it excludes any business accounts even though the account list below it shows both; confirm switching Dashboard months does not affect the Accounts tab figure at all (it's not month-scoped); confirm the Business tab's "Total Business Balance" is untouched.
 
-**8.32 Transfers tab (Section 3.20)** — the fixes change balances and totals, so check exact numbers:
-- **Round-trip (8.7)**: `notTransfer` survives write → Sheet → read as `true`; an old Sheet without the column loads it as **absent** (not `false`) — absent is how a local row that never had it fingerprints, so a `false` would make every untouched row look edited on its first sync. A second sync must report nothing to change.
-- The list (simplified layout, 3.20): Business ↔ Personal shows only cross-ledger pairs, both directions, oldest first; Personal ↔ Personal only personal pairs; Business ↔ Business pairs appear in neither. The month bar (‹ ›) moves exactly one month and the list holds only pairs whose out side is in that month. Summary totals equal the sums of the listed rows per direction. Business ↔ Business and other months are excluded from totals.
-- Fixture mirroring the live data: a one-sided business expense "Transfer to Meezan Bank" is listed as one-sided; **Complete** to a personal account → a personal income of the same amount appears on that account, both rows share a `transferId`, the original is in its ledger's Transfer category, the business month's expenses fall by exactly that amount, the receiving balance rises by exactly that amount, and the entry leaves Check for missing transfers.
-- A same-amount out/in pair 1 day apart is a likely pair; **Mark** leaves both balances byte-identical and removes the amount from income and expense. A pair 4 days apart, or of different amounts, is not suggested. A reconciliation adjustment is never suggested.
-- **Not a transfer** hides a suggestion permanently (survives sync). A broken (lone) half is listed and **Remove transfer marking** returns it to ordinary income/expense.
-- The new tab fits a 375px screen with no horizontal page scroll.
+**8.32 Transfers tab (Section 3.20)**:
+- **Round-trip (8.7)**: `notTransfer` (no longer set by the app, but present on old rows) survives write → Sheet → read as `true`; an old Sheet without the column loads it as **absent** (not `false`), and a second sync reports nothing to change.
+- Business ↔ Personal shows only cross-ledger pairs, both directions; Personal ↔ Personal only personal pairs; Business ↔ Business pairs appear in neither. A lone transfer half is never listed.
 
 **8.33 Transfers tab, simplified layout (Section 3.20)**:
-- No account or kind filter, no per-row ticks; Check for missing transfers is a closed section at the bottom, absent when empty.
+- No account or kind filter, no per-row ticks, no suggestions section.
 - CSV: header `Date,From,To,Amount,Currency,Note`, one line per listed row; a note starting with `=` gets a leading `'`; commas and quotes are quoted.
 - **No balance moves** from opening, switching or navigating the tab.
 - Fits a 375px screen with no horizontal page or table scroll.
@@ -1041,6 +1021,8 @@ This mobile layout work applies to the **Cloud** copy first, since that's the on
 ---
 
 ## Change Log
+
+- **2026-10-31 (Transfers tab — suggestions removed)** — The user still saw the suggestions (one-sided / likely pair / broken) and does not want them at all. Removed from the tab with their buttons and code (`completeOneSided`, `markLikelyPair`, `dismissTransferSuggestion`, `unmarkBrokenTransfer`, `guessOtherAccount`); `transferAnalysis` replaced by `transferPairs`. The tab is now only the month, the two options, totals, list and Download CSV. No data changed; `notTransfer` stays in the schema. Section 3.20, tests 8.32/8.33 updated.
 
 - **2026-10-31 (Transfers tab simplified — just the two monthly lists)** — The first Transfers tab (filters, per-account transfer statement with ticks, a "Needs attention" box on top) confused the user. What they want: *each month*, how much moved **Business ↔ Personal** and **Personal ↔ Personal**; balances are checked with Statement Check. The tab now has a month bar, those two options, totals per direction, the list and Download CSV. The suggestion checks moved into a closed "Check for missing transfers" section at the bottom. The per-account transfer statement (briefly 3.20a) was removed; its ticks were the same `clearedOn` ticks as Statement Check, so the 10 October Meezan ticks already set stay there unchanged. No data field was added or removed. Tests: 8.32 (updated) and 8.33.
   - **Verified** headless: 8.33 (17 checks — month default and ‹ › / picker, both options, oldest-first rows, Business ↔ Business excluded, per-direction totals, CSV quoting and formula guard, no balance moved) and 8.32 (36, updated for the new layout); Statement Check (32) and sync (16) still pass. Measured at 375px: page and table fit with no horizontal scroll, the bottom section included.
