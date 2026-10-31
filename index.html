@@ -215,6 +215,32 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
 .reconcile-form { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border); display: flex; gap: 10px; align-items: end; flex-wrap: wrap; }
 .reconcile-form label { display: flex; flex-direction: column; font-size: 12px; color: var(--text-muted); gap: 4px; font-weight: 600; }
 .reconcile-form input { width: 160px; }
+/* Statement Check panel (Section 3.19) */
+.stmt-panel { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border); }
+.stmt-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.stmt-head strong { font-size: 15px; min-width: 130px; text-align: center; }
+.stmt-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+.stmt-chip { border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 999px; padding: 3px 10px; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.stmt-chip.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; font-weight: 600; }
+.stmt-ok { color: var(--income); }
+.stmt-warn { color: #b45309; }
+.stmt-muted { color: var(--text-muted); }
+.stmt-balances { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; margin-bottom: 10px; }
+.stmt-balances label { display: flex; flex-direction: column; font-size: 12px; color: var(--text-muted); gap: 4px; font-weight: 600; }
+.stmt-balances input { width: 170px; }
+.stmt-msg { font-size: 13px; padding: 8px 10px; border-radius: 8px; background: var(--bg); margin-bottom: 8px; }
+.stmt-row-off td { color: var(--text-muted); }
+.stmt-summary { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 16px; font-size: 13px; margin: 10px 0; max-width: 420px; }
+.stmt-summary .amount { text-align: right; }
+.stmt-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.cleared-tick { font-size: 11px; color: var(--income); margin-left: 4px; }
+.stmt-actions .primary-btn:disabled { opacity: .45; cursor: not-allowed; }
+.stmt-panel .tx-table td, .stmt-panel .tx-table th { padding: 8px 6px; }
+.stmt-panel .tx-table td.amount { white-space: nowrap; }
+/* Four card actions no longer fit beside the name on a phone — let them drop below it (10.4a). */
+.account-card-top { flex-wrap: wrap; gap: 8px; }
+.account-card-top > div:first-child { min-width: 0; }
+.account-actions { flex-wrap: wrap; }
 .toast { position: fixed; bottom: 24px; right: 24px; background: #171a2b; color: white; padding: 12px 18px; border-radius: 8px; font-size: 14px; opacity: 0; transform: translateY(10px); transition: opacity .2s, transform .2s; pointer-events: none; box-shadow: var(--shadow); max-width: calc(100vw - 48px); z-index: 50; }
 .toast.show { opacity: 1; transform: translateY(0); }
 .sync-status-card { display: flex; align-items: center; gap: 12px; }
@@ -1221,6 +1247,8 @@ function loadData() {
   }
   if (!Array.isArray(data.accounts)) data.accounts = [];
   if (!Array.isArray(data.reconciliations)) data.reconciliations = [];
+  /* Data saved before Statement Check existed simply has no statements yet (3.19). */
+  if (!Array.isArray(data.statements)) data.statements = [];
   /* Data saved before the log existed simply starts with an empty one (3.17). */
   if (!Array.isArray(data.logs)) data.logs = [];
   if (data.accounts.length === 0) {
@@ -1788,6 +1816,7 @@ document.getElementById("importFile").addEventListener("change", (e) => {
       if (!parsed.categories || !parsed.transactions) throw new Error("Invalid file");
       if (!Array.isArray(parsed.accounts)) parsed.accounts = [];
       if (!Array.isArray(parsed.reconciliations)) parsed.reconciliations = [];
+      if (!Array.isArray(parsed.statements)) parsed.statements = [];
       /* Logged onto the IMPORTED data, so the record of the import survives in what replaced it. */
       db = parsed;
       if (!Array.isArray(db.logs)) db.logs = [];
@@ -2008,6 +2037,8 @@ function deleteAccount(id) {
   const gone = getAccount(id);
   db.accounts = db.accounts.filter((a) => a.id !== id);
   db.reconciliations = db.reconciliations.filter((r) => r.accountId !== id);
+  db.statements = db.statements.filter((s) => s.accountId !== id);
+  if (stmtAccountId === id) stmtAccountId = null;
   logAction("Deleted account", `${(gone && gone.name) || id}`);
   saveData(); renderAccountsView(); renderAll();
   toast("Account deleted");
@@ -2163,7 +2194,7 @@ function toggleAccountExclude(accountId) {
   renderAccountsView(); renderAll();
   toast(acc.excludeFromBalance ? `"${acc.name}" is no longer counted in Total Balance` : `"${acc.name}" is counted in Total Balance again`);
 }
-function toggleReconcile(accountId) { expandedReconcileAccountId = expandedReconcileAccountId === accountId ? null : accountId; renderAccountsView(); }
+function toggleReconcile(accountId) { expandedReconcileAccountId = expandedReconcileAccountId === accountId ? null : accountId; if (expandedReconcileAccountId) stmtAccountId = null; renderAccountsView(); }
 function ensureAdjustmentCategory(type, bucket) {
   let cat = db.categories.find((c) => c.name === "Balance Adjustment" && c.type === type && (c.bucket || "personal") === bucket);
   if (!cat) { cat = { id: uid(), name: "Balance Adjustment", type, color: "#94a3b8", isSystem: true, bucket }; db.categories.push(cat); }
@@ -2187,6 +2218,216 @@ function submitReconcile(accountId) {
   expandedReconcileAccountId = null;
   renderAccountsView(); renderAll();
   toast(Math.abs(diff) < 0.01 ? "Account already matched — no adjustment needed" : `Reconciled: adjustment of ${fmtMoney(diff)} recorded`);
+}
+
+/* ===== Statement Check (Section 3.19) =====
+   Reconcile (above) plugs the whole difference with one adjustment, which makes the figures agree but
+   hides the cause. This ticks the account's entries off against the bank statement month by month, so
+   what is left over points at the actual wrong or missing entries. Ticks are metadata only — no
+   balance, total or report reads clearedOn. */
+let stmtAccountId = null, stmtMonth = null;
+const signedAmt = (t) => (t.type === "income" ? t.amount : -t.amount);
+const shortMonth = (key) => { const [y, m] = key.split("-").map(Number); return new Date(y, m - 1, 1).toLocaleDateString(undefined, { month: "short", year: "2-digit" }); };
+const lastDayOf = (key) => { const [y, m] = key.split("-").map(Number); return `${key}-${String(new Date(y, m, 0).getDate()).padStart(2, "0")}`; };
+
+function getStatement(accountId, month) { return db.statements.find((s) => s.accountId === accountId && s.month === month); }
+function ensureStatement(accountId, month) {
+  let s = getStatement(accountId, month);
+  if (!s) { s = { id: uid(), accountId, month, openingBalance: null, closingBalance: null, status: "open", checkedAt: "" }; db.statements.push(s); }
+  return s;
+}
+
+/* Every figure the panel and the status chips show, computed live (3.19) — a "matched" month is only
+   ever displayed as matched while these still hold, so a later edit cannot leave a stale tick of approval. */
+function statementFigures(accountId, month) {
+  const s = getStatement(accountId, month);
+  const rows = db.transactions.filter((t) => t.accountId === accountId && t.date && monthKey(t.date) === month)
+    .sort((a, b) => a.date.localeCompare(b.date) || String(a.id).localeCompare(String(b.id)));
+  const ticked = rows.filter((t) => t.clearedOn === month), unticked = rows.filter((t) => t.clearedOn !== month);
+  const tickedNet = round2(ticked.reduce((n, t) => n + signedAmt(t), 0));
+  const untickedNet = round2(unticked.reduce((n, t) => n + signedAmt(t), 0));
+  const appOpening = accountBalanceBefore(accountId, `${month}-01`);
+  const bankOpening = s && Number.isFinite(s.openingBalance) ? s.openingBalance : null;
+  const bankClosing = s && Number.isFinite(s.closingBalance) ? s.closingBalance : null;
+  const openingOk = bankOpening !== null && Math.abs(bankOpening - appOpening) < 0.01;
+  const unexplained = bankOpening !== null && bankClosing !== null ? round2(bankClosing - (bankOpening + tickedNet)) : null;
+  const balanced = openingOk && unticked.length === 0 && unexplained !== null && Math.abs(unexplained) < 0.01;
+  return { s, rows, ticked, unticked, tickedNet, untickedNet, appOpening, appClosing: round2(appOpening + tickedNet + untickedNet), bankOpening, bankClosing, openingOk, unexplained, balanced };
+}
+
+function statementStatus(accountId, month) {
+  const f = statementFigures(accountId, month);
+  const cur = accountCurrency(accountId);
+  if (!f.s) return { mark: "—", label: "not checked", cls: "stmt-muted" };
+  if (f.s.status === "matched") return f.balanced ? { mark: "✓", label: "matched", cls: "stmt-ok" } : { mark: "⚠", label: "changed since matched", cls: "stmt-warn" };
+  if (f.bankOpening !== null && !f.openingOk) return { mark: "⚠", label: "opening differs", cls: "stmt-warn" };
+  if (f.unexplained !== null && Math.abs(f.unexplained) >= 0.01) return { mark: "⚠", label: `${fmtMoney(f.unexplained, cur)} to find`, cls: "stmt-warn" };
+  if (f.unexplained !== null && f.unticked.length) return { mark: "⚠", label: `${f.unticked.length} not ticked`, cls: "stmt-warn" };
+  if (f.unexplained !== null) return { mark: "⚠", label: "ready to finish", cls: "stmt-warn" };
+  return { mark: "⚠", label: "in progress", cls: "stmt-warn" };
+}
+
+/* Every month from the account's first activity up to this month — the chips, so the user can work
+   oldest-first: the first month that doesn't match is where the problem starts. */
+function accountMonths(accountId) {
+  const acc = getAccount(accountId), now = monthKey(todayISO());
+  const starts = db.transactions.filter((t) => t.accountId === accountId && t.date).map((t) => monthKey(t.date));
+  if (acc && acc.openingDate) starts.push(monthKey(acc.openingDate));
+  let first = starts.sort()[0] || now;
+  if (first > now) first = now;
+  const out = [];
+  for (let m = first; m <= now; m = shiftMonth(m, 1)) out.push(m);
+  return out;
+}
+
+function toggleStatement(accountId) {
+  if (stmtAccountId === accountId) { stmtAccountId = null; renderAccountsView(); return; }
+  stmtAccountId = accountId;
+  expandedReconcileAccountId = null;
+  const months = accountMonths(accountId);
+  const lastFull = shiftMonth(monthKey(todayISO()), -1);
+  stmtMonth = months.includes(lastFull) ? lastFull : months[months.length - 1];
+  renderAccountsView();
+}
+function setStatementMonth(month) { stmtMonth = month; renderAccountsView(); }
+
+function setStatementBalance(field, value) {
+  const acc = getAccount(stmtAccountId);
+  if (!acc) return;
+  const s = ensureStatement(acc.id, stmtMonth);
+  const v = parseFloat(value);
+  s[field] = Number.isFinite(v) ? v : null;
+  logAction("Saved statement balance", `${acc.name} · ${monthLabel(stmtMonth)} · ${field === "openingBalance" ? "opening" : "closing"} ${s[field] === null ? "cleared" : fmtMoney(s[field], acc.currency)}`);
+  saveData(); renderAccountsView();
+}
+
+/* Not logged per tick: a statement can have dozens of lines and the log keeps only 400 (3.17). */
+function toggleCleared(txId, checked) {
+  const t = db.transactions.find((x) => x.id === txId);
+  if (!t) return;
+  ensureStatement(t.accountId, stmtMonth);
+  if (checked) t.clearedOn = stmtMonth; else delete t.clearedOn;
+  saveData(); renderAccountsView();
+}
+function tickAllStatement() {
+  const f = statementFigures(stmtAccountId, stmtMonth);
+  if (!f.unticked.length) return;
+  ensureStatement(stmtAccountId, stmtMonth);
+  f.unticked.forEach((t) => { t.clearedOn = stmtMonth; });
+  saveData(); renderAccountsView();
+}
+
+function finishStatement() {
+  const acc = getAccount(stmtAccountId);
+  const f = statementFigures(stmtAccountId, stmtMonth);
+  if (!acc || !f.balanced) { alert("This month doesn't match yet — see the message above the list for what is still different."); return; }
+  f.s.status = "matched";
+  f.s.checkedAt = todayISO();
+  logAction("Matched bank statement", `${acc.name} · ${monthLabel(stmtMonth)} · ${f.rows.length} entr${f.rows.length === 1 ? "y" : "ies"} ticked · ${fmtMoney(f.bankOpening, acc.currency)} → ${fmtMoney(f.bankClosing, acc.currency)}`);
+  saveData(); renderAccountsView();
+  toast(`${acc.name}: ${monthLabel(stmtMonth)} matches your bank statement`);
+}
+
+/* Last resort only (3.19): books exactly what is still unexplained, the same way Reconcile does, and
+   ticks it so the month can be finished. */
+function bookStatementAdjustment() {
+  const acc = getAccount(stmtAccountId);
+  const f = statementFigures(stmtAccountId, stmtMonth);
+  if (!acc || !f.openingOk || f.unticked.length || f.unexplained === null || Math.abs(f.unexplained) < 0.01) return;
+  const diff = f.unexplained;
+  if (!confirm(`Book ${fmtMoney(diff, acc.currency)} as a "Statement adjustment" on ${acc.name}, dated ${lastDayOf(stmtMonth)}?\n\nOnly do this if you really can't find the missing entry. The adjustment changes the account balance by exactly this amount.`)) return;
+  const bucket = acc.bucket || "personal";
+  const type = diff > 0 ? "income" : "expense";
+  const date = lastDayOf(stmtMonth);
+  db.transactions.push({ id: uid(), type, date, accountId: acc.id, categoryId: ensureAdjustmentCategory(type, bucket), amount: Math.abs(diff), description: "Statement adjustment", isReconciliation: true, bucket, clearedOn: stmtMonth });
+  db.reconciliations.push({ id: uid(), accountId: acc.id, date, actualBalance: f.bankClosing, computedBefore: round2(f.bankClosing - diff), diff });
+  logAction("Booked statement adjustment", `${acc.name} · ${monthLabel(stmtMonth)} · ${fmtMoney(diff, acc.currency)} could not be traced to an entry`);
+  saveData(); renderAccountsView(); renderAll();
+  toast(`Adjustment of ${fmtMoney(diff, acc.currency)} booked — you can Finish now`);
+}
+
+/* Opens the Add Transaction form on this account's ledger, with the account and a date inside the
+   statement month already chosen. The panel stays open for when the user comes back. */
+function addMissingStatementEntry() {
+  const acc = getAccount(stmtAccountId);
+  if (!acc) return;
+  setTransactionsLedger(acc.bucket || "personal");
+  switchView("transactions");
+  txAccountSelect.value = acc.id;
+  const today = todayISO();
+  document.getElementById("txDate").value = monthKey(today) === stmtMonth ? today : lastDayOf(stmtMonth);
+  window.scrollTo({ top: 0, behavior: "smooth" });
+  toast(`Add the missing ${acc.name} entry, then go back to Accounts`);
+}
+
+function renderStatementPanel(a) {
+  const months = accountMonths(a.id);
+  if (!months.includes(stmtMonth)) stmtMonth = months[months.length - 1];
+  const m = stmtMonth, cur = a.currency;
+  const fm = (n) => fmtMoney(n, cur);
+  const f = statementFigures(a.id, m);
+  const idx = months.indexOf(m);
+  const chips = months.map((k) => {
+    const st = statementStatus(a.id, k);
+    return `<button type="button" class="stmt-chip ${k === m ? "active" : ""}" title="${monthLabel(k)}: ${st.label}" onclick="setStatementMonth('${k}')">${shortMonth(k)} <span class="${st.cls}">${st.mark}</span></button>`;
+  }).join("");
+  const prevStmt = idx > 0 ? getStatement(a.id, months[idx - 1]) : null;
+  const openingHint = prevStmt && Number.isFinite(prevStmt.closingBalance) ? `last month's statement closed at ${fm(prevStmt.closingBalance)}` : "";
+
+  let msg;
+  if (f.bankOpening === null || f.bankClosing === null) {
+    msg = `Type the <strong>opening</strong> and <strong>closing</strong> balance from your ${a.name} statement for ${monthLabel(m)}, then tick each entry below that appears on it.`;
+  } else if (!f.openingOk) {
+    msg = `<span class="stmt-warn">The statement opens at <strong>${fm(f.bankOpening)}</strong>, but the app has <strong>${fm(f.appOpening)}</strong> on 1 ${monthLabel(m)} — a difference of ${fm(round2(f.bankOpening - f.appOpening))}.</span> The cause is in an <strong>earlier month</strong> (or in this account's opening balance), not in ${monthLabel(m)}.` +
+      (idx > 0 ? ` <button type="button" class="icon-link" onclick="setStatementMonth('${months[idx - 1]}')">Check ${monthLabel(months[idx - 1])} first →</button>` : "");
+  } else if (f.balanced) {
+    msg = f.s && f.s.status === "matched"
+      ? `<span class="stmt-ok"><strong>✓ ${monthLabel(m)} matches your statement</strong></span>${f.s.checkedAt ? ` (finished ${f.s.checkedAt})` : ""}.`
+      : `<span class="stmt-ok"><strong>Everything matches.</strong></span> Press <strong>Finish</strong> to mark ${monthLabel(m)} as checked.`;
+  } else {
+    const bits = [];
+    if (f.unticked.length) bits.push(`<strong>${f.unticked.length} entr${f.unticked.length === 1 ? "y is" : "ies are"} not ticked</strong> (${fm(f.untickedNet)}). If they're not on the statement, they're probably on the wrong account, duplicated or the wrong amount — fix them with Edit / Delete / Move to Account on the Transactions tab.`);
+    if (f.unexplained !== null && Math.abs(f.unexplained) >= 0.01) bits.push(`<strong>${fm(f.unexplained)} is still unexplained.</strong> ${f.unexplained > 0 ? "The bank shows more money than your ticked entries — an income is missing from the app, or a ticked expense is too big." : "The bank shows less money than your ticked entries — an expense is missing from the app, or a ticked income is too big."}`);
+    msg = bits.join("<br>");
+  }
+
+  const tableRows = f.rows.length ? f.rows.map((t) => {
+    const on = t.clearedOn === m;
+    return `<tr class="${on ? "" : "stmt-row-off"}"><td><input type="checkbox" ${on ? "checked" : ""} onchange="toggleCleared('${t.id}', this.checked)" title="Tick if this entry is on the bank statement"></td><td style="white-space:nowrap;" title="${t.date}">${t.date.slice(8)}</td><td>${t.transferId ? "⇄ " : ""}${t.description || categoryDisplayName(getCategory(t.categoryId))}<div class="stmt-muted" style="font-size:12px;">${categoryDisplayName(getCategory(t.categoryId))}</div></td><td class="amount ${t.type}" style="white-space:nowrap;">${t.type === "income" ? "+" : "-"}${fm(t.amount)}</td></tr>`;
+  }).join("") : `<tr><td colspan="4" class="empty-state">No entries on ${a.name} in ${monthLabel(m)}.</td></tr>`;
+
+  const summary = f.bankOpening !== null && f.bankClosing !== null ? `<div class="stmt-summary">
+      <span>Statement opening</span><span class="amount">${fm(f.bankOpening)} ${f.openingOk ? '<span class="stmt-ok">✓</span>' : '<span class="stmt-warn">⚠</span>'}</span>
+      <span>Ticked entries (${f.ticked.length})</span><span class="amount">${f.tickedNet >= 0 ? "+" : ""}${fm(f.tickedNet)}</span>
+      <span>Statement closing</span><span class="amount">${fm(f.bankClosing)}</span>
+      <span><strong>Still unexplained</strong></span><span class="amount ${Math.abs(f.unexplained) < 0.01 ? "stmt-ok" : "stmt-warn"}"><strong>${fm(f.unexplained)}</strong></span>
+      <span class="stmt-muted">Not ticked (${f.unticked.length})</span><span class="amount stmt-muted">${fm(f.untickedNet)}</span>
+    </div>` : "";
+
+  const canAdjust = f.openingOk && !f.unticked.length && f.unexplained !== null && Math.abs(f.unexplained) >= 0.01;
+  const isMatched = f.balanced && f.s && f.s.status === "matched";
+  return `<div class="stmt-panel">
+    <div class="stmt-head">
+      <button type="button" class="icon-link" ${idx > 0 ? "" : "disabled"} onclick="setStatementMonth('${months[Math.max(0, idx - 1)]}')">‹</button>
+      <strong>${monthLabel(m)}</strong>
+      <button type="button" class="icon-link" ${idx < months.length - 1 ? "" : "disabled"} onclick="setStatementMonth('${months[Math.min(months.length - 1, idx + 1)]}')">›</button>
+      <span class="stmt-muted" style="font-size:12px;">Statement Check — start with the oldest month that doesn't match</span>
+    </div>
+    <div class="stmt-chips">${chips}</div>
+    <div class="stmt-balances">
+      <label>Statement opening balance<input type="number" step="0.01" value="${f.bankOpening === null ? "" : f.bankOpening}" placeholder="${openingHint ? "e.g. " + (prevStmt.closingBalance) : "from your statement"}" onchange="setStatementBalance('openingBalance', this.value)"><span class="stmt-muted" style="font-weight:400;">App: ${fm(f.appOpening)} on 1 ${shortMonth(m)}${openingHint ? " · " + openingHint : ""}</span></label>
+      <label>Statement closing balance<input type="number" step="0.01" value="${f.bankClosing === null ? "" : f.bankClosing}" placeholder="from your statement" onchange="setStatementBalance('closingBalance', this.value)"><span class="stmt-muted" style="font-weight:400;">App: ${fm(f.appClosing)} at month end</span></label>
+    </div>
+    <div class="stmt-msg">${msg}</div>
+    <div class="table-wrap"><table class="tx-table"><thead><tr><th style="width:28px;">✓</th><th>Day</th><th>Entry</th><th class="right">Amount</th></tr></thead><tbody>${tableRows}</tbody></table></div>
+    ${summary}
+    <div class="stmt-actions">
+      ${f.unticked.length ? `<button type="button" class="icon-link" onclick="tickAllStatement()">Tick all</button>` : ""}
+      <button type="button" class="icon-link" onclick="addMissingStatementEntry()">+ Add missing entry</button>
+      ${isMatched ? "" : `<button type="button" class="primary-btn" ${f.balanced ? "" : "disabled"} onclick="finishStatement()">Finish</button>`}
+      ${canAdjust ? `<button type="button" class="icon-link danger" onclick="bookStatementAdjustment()" title="Last resort — only if you can't find the missing entry">Book the rest as an adjustment</button>` : ""}
+    </div>
+  </div>`;
 }
 
 function renderAccountsView() {
@@ -2228,15 +2469,20 @@ function renderAccountsView() {
       const bal = accountCurrentBalance(a.id);
       const lastRec = lastReconciledDate(a.id);
       const isOpen = expandedReconcileAccountId === a.id;
+      const stmtOpen = stmtAccountId === a.id;
+      /* Last three months at a glance, so a drifting account is visible without opening anything (3.19). */
+      const recent = accountMonths(a.id).slice(-3).map((k) => { const st = statementStatus(a.id, k); return `<span class="${st.cls}" title="${monthLabel(k)}: ${st.label}">${shortMonth(k)} ${st.mark}</span>`; }).join(" · ");
       return `<div class="account-card">
         <div class="account-card-top">
           <div>
             <div class="account-name-row"><span class="cat-dot" style="background:${a.color}"></span>${a.name}<span class="account-type-badge">${accountTypeLabel(a.type)}</span><span class="account-type-badge">${a.bucket === "business" ? "Business" : "Personal"}</span>${a.excludeFromBalance ? `<span class="account-type-badge" title="This account's balance is left out of Total Balance. Its transactions still count as income/expense.">not in total</span>` : ""}</div>
             <div class="account-balance amount ${bal < 0 ? "expense" : "income"}">${fmtMoney(bal, a.currency)}</div>
             <div class="account-meta">${lastRec ? "Last reconciled: " + lastRec : "Not reconciled yet"}</div>
+            <div class="account-meta">Statements: ${recent}</div>
           </div>
           <div class="account-actions">
             <button class="icon-link" onclick="toggleAccountExclude('${a.id}')" title="Accounts can't be edited, so this toggles directly from the card.">${a.excludeFromBalance ? "Include in total" : "Exclude from total"}</button>
+            <button class="icon-link" onclick="toggleStatement('${a.id}')" title="Tick this account's entries off against your bank statement, month by month">${stmtOpen ? "Close check" : "Statement check"}</button>
             <button class="icon-link" onclick="toggleReconcile('${a.id}')">${isOpen ? "Cancel" : "Reconcile"}</button>
             <button class="icon-link danger" onclick="deleteAccount('${a.id}')">Delete</button>
           </div>
@@ -2246,6 +2492,7 @@ function renderAccountsView() {
             <label>Actual Balance<input type="number" step="0.01" id="reconcileBalance-${a.id}" placeholder="e.g. from your bank app"></label>
             <button type="button" class="primary-btn" onclick="submitReconcile('${a.id}')">Save Reconciliation</button>
           </div>` : ""}
+        ${stmtOpen ? renderStatementPanel(a) : ""}
       </div>`;
     }).join("");
   }
@@ -2365,6 +2612,10 @@ document.getElementById("txForm").addEventListener("submit", (e) => {
     /* Preserve system flags the form never collects — this record is rebuilt from scratch, which would otherwise silently strip them (Section 3.10). */
     if (existingTx.transferId) record.transferId = existingTx.transferId;
     if (existingTx.isReconciliation) record.isReconciliation = true;
+    /* A statement tick survives only edits that leave the matched line as the bank shows it — the
+       amount, direction, account and month. Changing any of those makes the match untrue (3.19). */
+    if (existingTx.clearedOn && existingTx.amount === record.amount && existingTx.type === record.type &&
+        existingTx.accountId === record.accountId && monthKey(existingTx.date || "") === monthKey(record.date || "")) record.clearedOn = existingTx.clearedOn;
   }
   if (!record.date || !record.accountId || !record.categoryId || isNaN(record.amount) || record.amount <= 0) { alert("Please fill in date, account, category and a positive amount."); return; }
   /* Log before saving so the entry and the change persist in one write (3.17). */
@@ -2702,6 +2953,7 @@ function editTransaction(id) {
   const t = db.transactions.find((t) => t.id === id);
   if (!t) return;
   if (t.transferId) { alert("This is one half of a transfer, so it can't be edited on its own — changing one side's amount or account would leave the pair mismatched and an account balance wrong.\n\nDelete it instead (both halves go together) and re-enter it using the \"Transfer Between Accounts\" form."); return; }
+  if (t.clearedOn && !confirm(`This entry is ticked as matching your ${monthLabel(t.clearedOn)} bank statement.\n\nChanging the category or note is fine. Changing the amount, type, account or month will untick it, and that month will need checking again.\n\nContinue editing?`)) return;
   txTypeSelect.value = t.type;
   populateAccountSelect(txAccountSelect, false, transactionsLedger);
   /* Clear any active filter — it could otherwise hide the very category being edited. */
@@ -2825,7 +3077,8 @@ document.getElementById("moveSelectedTxBtn").addEventListener("click", () => {
   if (!targetId) { alert("Add an account first — there's nothing to move these transactions to."); return; }
   const targetAccount = getAccount(targetId);
   if (!confirm(`Move ${count} selected transaction${count > 1 ? "s" : ""} to "${targetAccount ? targetAccount.name : "this account"}"? Only the linked account changes — the date, type, category, amount, and description stay exactly the same.`)) return;
-  db.transactions.forEach((t) => { if (selectedTxIds.has(t.id)) t.accountId = targetId; });
+  /* A moved entry no longer belongs to the statement it was ticked against (3.19). */
+  db.transactions.forEach((t) => { if (selectedTxIds.has(t.id) && t.accountId !== targetId) { t.accountId = targetId; delete t.clearedOn; } });
   selectedTxIds.clear();
   logAction("Moved transactions to another account", `${count} entr${count === 1 ? "y" : "ies"} → ${targetAccount ? targetAccount.name : "?"}`);
   saveData(); renderTransactionsView(); renderDashboard(); renderBusinessView();
@@ -2854,7 +3107,7 @@ function renderTransactionsTable() {
   if (rows.length === 0) { tbody.innerHTML = `<tr><td colspan="7" class="empty-state">No transactions match your filters.</td></tr>`; updateTxBulkBar(); return; }
   tbody.innerHTML = rows.map((t) => {
     const cat = getCategory(t.categoryId), acc = getAccount(t.accountId);
-    return `<tr><td><input type="checkbox" class="row-check" data-id="${t.id}" ${selectedTxIds.has(t.id) ? "checked" : ""} onchange="toggleTxSelect('${t.id}', this.checked)"></td><td>${t.date}</td><td>${acc ? acc.name : "—"}</td><td><span class="cat-badge"><span class="cat-dot" style="background:${cat ? cat.color : "#999"}"></span>${categoryDisplayName(cat)}</span></td><td>${t.transferId ? `<span title="Transfer between your own accounts — not counted as income or expense" style="font-size:11px;color:var(--text-muted);border:1px solid var(--border);border-radius:4px;padding:1px 5px;margin-right:6px;white-space:nowrap;">⇄ Transfer</span>` : ""}${t.description || ""}</td><td class="amount ${t.type}">${t.type === "income" ? "+" : "-"}${fmtMoney(t.amount, accountCurrency(t.accountId))}</td><td class="row-actions"><button class="icon-link" onclick="editTransaction('${t.id}')">Edit</button><button class="icon-link danger" onclick="deleteTransaction('${t.id}')">Delete</button></td></tr>`;
+    return `<tr><td><input type="checkbox" class="row-check" data-id="${t.id}" ${selectedTxIds.has(t.id) ? "checked" : ""} onchange="toggleTxSelect('${t.id}', this.checked)"></td><td>${t.date}${t.clearedOn ? `<span class="cleared-tick" title="Matches your ${monthLabel(t.clearedOn)} bank statement">✓</span>` : ""}</td><td>${acc ? acc.name : "—"}</td><td><span class="cat-badge"><span class="cat-dot" style="background:${cat ? cat.color : "#999"}"></span>${categoryDisplayName(cat)}</span></td><td>${t.transferId ? `<span title="Transfer between your own accounts — not counted as income or expense" style="font-size:11px;color:var(--text-muted);border:1px solid var(--border);border-radius:4px;padding:1px 5px;margin-right:6px;white-space:nowrap;">⇄ Transfer</span>` : ""}${t.description || ""}</td><td class="amount ${t.type}">${t.type === "income" ? "+" : "-"}${fmtMoney(t.amount, accountCurrency(t.accountId))}</td><td class="row-actions"><button class="icon-link" onclick="editTransaction('${t.id}')">Edit</button><button class="icon-link danger" onclick="deleteTransaction('${t.id}')">Delete</button></td></tr>`;
   }).join("");
   updateTxBulkBar();
 }
@@ -3306,9 +3559,10 @@ function renderCategoriesView() {
 const SHEET_TABS = {
   Categories: ["id", "name", "type", "color", "parentId", "order", "bucket", "excludeFromTotals"],
   Accounts: ["id", "name", "type", "openingBalance", "openingDate", "color", "bucket", "excludeFromBalance", "currency"],
-  Transactions: ["id", "type", "date", "accountId", "categoryId", "amount", "description", "isReconciliation", "bucket", "transferId", "ref", "panel", "credits"],
+  Transactions: ["id", "type", "date", "accountId", "categoryId", "amount", "description", "isReconciliation", "bucket", "transferId", "ref", "panel", "credits", "clearedOn"],
   Budgets: ["id", "categoryId", "month", "amount"],
   Reconciliations: ["id", "accountId", "date", "actualBalance", "computedBefore", "diff"],
+  Statements: ["id", "accountId", "month", "openingBalance", "closingBalance", "status", "checkedAt"],
   Logs: ["id", "at", "device", "action", "detail"],
   Settings: ["key", "value"],
 };
@@ -3431,9 +3685,15 @@ function coerceTypesFromSheet(raw) {
     /* Missing column (a sheet written before this field existed) falls back to the main currency,
        which is correct: all pre-existing accounts were in it (Section 3.15). */
     currency: r.currency ? String(r.currency) : settingsCurrency }));
-  const transactions = raw.Transactions.filter((r) => r.id).map((r) => ({ id: r.id, type: r.type, date: r.date, accountId: r.accountId, categoryId: r.categoryId, amount: parseFloat(r.amount) || 0, description: r.description || "", isReconciliation: String(r.isReconciliation).toUpperCase() === "TRUE", bucket: r.bucket || "personal", transferId: r.transferId ? String(r.transferId) : "", ref: r.ref ? String(r.ref) : "", panel: r.panel ? String(r.panel) : "", credits: Number(r.credits) > 0 ? Number(r.credits) : 0 }));
+  const transactions = raw.Transactions.filter((r) => r.id).map((r) => ({ id: r.id, type: r.type, date: r.date, accountId: r.accountId, categoryId: r.categoryId, amount: parseFloat(r.amount) || 0, description: r.description || "", isReconciliation: String(r.isReconciliation).toUpperCase() === "TRUE", bucket: r.bucket || "personal", transferId: r.transferId ? String(r.transferId) : "", ref: r.ref ? String(r.ref) : "", panel: r.panel ? String(r.panel) : "", credits: Number(r.credits) > 0 ? Number(r.credits) : 0,
+    /* Missing column (a sheet written before Statement Check) yields "" -> not ticked (3.19). */
+    clearedOn: r.clearedOn ? String(r.clearedOn) : "" }));
   const budgets = raw.Budgets.filter((r) => r.id).map((r) => ({ id: r.id, categoryId: r.categoryId, month: r.month, amount: parseFloat(r.amount) || 0 }));
   const reconciliations = raw.Reconciliations.filter((r) => r.id).map((r) => ({ id: r.id, accountId: r.accountId, date: r.date, actualBalance: parseFloat(r.actualBalance) || 0, computedBefore: parseFloat(r.computedBefore) || 0, diff: parseFloat(r.diff) || 0 }));
+  /* A sheet with no Statements tab yet yields none; the tab is created on the next sync (3.19).
+     A blank balance stays null ("not typed yet"), never 0 — 0 is a real balance. */
+  const balOrNull = (v) => { const n = parseFloat(v); return v === "" || v === undefined || v === null || !Number.isFinite(n) ? null : n; };
+  const statements = (raw.Statements || []).filter((r) => r.id).map((r) => ({ id: r.id, accountId: r.accountId, month: String(r.month || ""), openingBalance: balOrNull(r.openingBalance), closingBalance: balOrNull(r.closingBalance), status: r.status === "matched" ? "matched" : "open", checkedAt: String(r.checkedAt || "") }));
   /* A sheet with no Logs tab yet yields an empty log rather than an error; the tab is created on the
      next push by ensureSheetStructure (3.17). */
   const logs = (raw.Logs || []).filter((r) => r.id).map((r) => ({ id: r.id, at: String(r.at || ""), device: String(r.device || ""), action: String(r.action || ""), detail: String(r.detail || "") })).slice(-LOG_LIMIT);
@@ -3445,7 +3705,7 @@ function coerceTypesFromSheet(raw) {
     const rh = settingRow("recoveryHash"), rs = settingRow("recoverySalt");
     if (rh && rs) { settings.recoveryHash = String(rh); settings.recoverySalt = String(rs); }
   }
-  return { categories, accounts, transactions, budgets, reconciliations, logs, settings };
+  return { categories, accounts, transactions, budgets, reconciliations, statements, logs, settings };
 }
 
 /* ===================== Three-way merge (Section 5.1) =====================
@@ -3454,8 +3714,8 @@ function coerceTypesFromSheet(raw) {
    after I sync" data loss. Every record already carries a unique id, so the two sides can be
    reconciled instead of one winning wholesale. */
 
-const MERGE_LISTS = ["categories", "accounts", "transactions", "budgets", "reconciliations"];
-const MERGE_TAB = { categories: "Categories", accounts: "Accounts", transactions: "Transactions", budgets: "Budgets", reconciliations: "Reconciliations" };
+const MERGE_LISTS = ["categories", "accounts", "transactions", "budgets", "reconciliations", "statements"];
+const MERGE_TAB = { categories: "Categories", accounts: "Accounts", transactions: "Transactions", budgets: "Budgets", reconciliations: "Reconciliations", statements: "Statements" };
 
 function loadSnapshot() {
   try { const raw = storeGet(CLOUD_SNAPSHOT_KEY); return raw ? JSON.parse(raw) : null; } catch (e) { return null; }
@@ -3484,6 +3744,7 @@ function recordFingerprint(listKey, o) {
 function recordLabel(listKey, r) {
   if (listKey === "transactions") return `${r.date || ""} ${r.description || "(no description)"} ${r.amount || 0}`.trim();
   if (listKey === "budgets") return `budget ${r.month || ""}`;
+  if (listKey === "statements") return `statement ${r.month || ""}`;
   return r.name || r.date || r.id;
 }
 
@@ -3618,7 +3879,12 @@ function syncWithSheet(opts) {
    of what was last synced, the user decides (Sync Now / sign-in) or the sync pauses (background). */
 const MASS_LOSS_MIN = 10, MASS_LOSS_SHARE = 0.2;
 
+/* Checked once per page load inside the sync itself, not only at sign-in: reading a tab that doesn't
+   exist yet (e.g. Statements, on a Sheet written by an older version) fails the whole batch read. */
+let sheetStructureChecked = false;
+
 async function syncWithSheetNow(opts) {
+  if (!sheetStructureChecked) { await ensureSheetStructure(); sheetStructureChecked = true; }
   const sheetData = coerceTypesFromSheet(await readAllFromSheet());
   ensureCurrencies(sheetData);
   /* seedBusinessCategories is deliberately NOT called on the pulled copy. It mints brand-new ids
@@ -3635,7 +3901,7 @@ async function syncWithSheetNow(opts) {
      work of any kind on this device (a single added account or category would have left a log), the
      Sheet is simply adopted whole — which is what the old sign-in flow did for this case. */
   const untouched = !loadSnapshot() && db.transactions.length === 0 && (db.logs || []).length === 0 &&
-    db.budgets.length === 0 && db.reconciliations.length === 0;
+    db.budgets.length === 0 && db.reconciliations.length === 0 && (db.statements || []).length === 0;
   const sheetHasData = sheetData.transactions.length > 0 || sheetData.accounts.length > 0;
   let result, guardLog = null;
   if (untouched && sheetHasData) {

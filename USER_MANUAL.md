@@ -137,6 +137,30 @@ If you set a budget on a main category like "Food," spending logged under any of
 
 ## 7. Reconciling — When Your Bank Balance Doesn't Match
 
+There are two ways. **Use Statement Check for bank accounts** — it finds *which* entries are wrong. Quick Reconcile (further down) only makes the number match; it's fine for a cash wallet.
+
+### Statement Check — find exactly which entries are wrong
+
+You'll need your bank statement for a month (from the bank's app, e.g. Meezan, UBL, HBL). It shows the **opening** balance on the 1st, every transaction, and the **closing** balance at month end.
+
+1. Go to **Accounts** and click **Statement check** on the account.
+2. Pick the month with the ‹ › arrows or the month buttons. Each button shows ✓ (matched), ⚠ (something to fix) or — (not checked). **Start with the oldest month that doesn't match** — a mistake in September makes every later month wrong too.
+3. Type the statement's **opening balance** and **closing balance**.
+   - If the app says the **opening differs**, the problem is in an *earlier* month. Tap **Check [previous month] first →** and do that one.
+4. Go down the list and **tick every entry that is on your statement**. Each tick saves straight away, so you can stop and continue later, even on another device.
+5. Read the box above the list — it tells you what's left:
+   - **"N entries are not ticked"** — these are in the app but not on the statement. Usually logged on the wrong account (use **Move to Account**), entered twice (delete one), or the wrong amount (edit it).
+   - **"Rs X is still unexplained"** — the statement has something the app doesn't. Find it on the statement and press **+ Add missing entry**; the form opens with the account and month already filled in.
+6. When everything matches, press **Finish**. The month shows **✓** from then on.
+
+**Good to know:**
+- Ticking never changes any balance or report — it's only a note that says "this line matches the bank".
+- Ticked entries show a small green **✓** next to the date on the Transactions tab.
+- If you later change a ticked entry's **amount, account or month**, the tick comes off and that month shows **⚠ changed since matched**, so you know to check it again. Changing only the category or note is fine.
+- **Can't find the cause at all?** Once every entry is ticked, a last-resort button **Book the rest as an adjustment** appears. It adds one adjustment for exactly what's left so you can finish the month. Try to find the real entry first.
+
+### Quick Reconcile — just make the number match
+
 If the balance shown in the app doesn't match what your bank or wallet actually shows, don't edit your old entries. Instead:
 
 1. Go to the **Accounts** tab.
@@ -546,7 +570,7 @@ Add to Home Screen on iPhone Safari, or Install app on Android Chrome (Section 2
 Select them with the checkboxes and use "Move to Account" (Section 5).
 
 **"My real bank balance doesn't match what's shown here."**
-Use Reconcile, don't edit old entries (Section 7).
+Use **Statement check** on that account and tick off your bank statement month by month, starting with the oldest month that doesn't match — it shows you exactly which entry is missing or wrong (Section 7). Don't edit old entries blindly.
 
 **"I picked a main category like 'Transport' in a filter and nothing showed up."**
 This is now fixed — picking a main category shows all entries under its subcategories too, not just entries logged directly against the main category itself.

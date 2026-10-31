@@ -68,6 +68,7 @@ Two things about the move that were verified rather than assumed:
 - `panel` — free-text IPTV panel name (e.g. `Premium`, `Cheap`) identifying **which separate credit stock** a transaction belongs to (Section 3.11). Credits never move between panels.
 - `credits` — number of credits. On a business **expense** with a `panel`, this is credits *bought* (making that row a credit purchase, and `amount / credits` its cost per credit). On a business **income** with a `panel`, this is credits *used* by that sale. Absent/0 on everything else.
 - `transferId` — set on **both halves** of a transfer (Section 3.10). Empty/absent means an ordinary transaction. A non-empty value means this row is one half of a money movement between two of your own accounts, and the value is shared by exactly the two rows forming that pair. Presence of a value is the *only* test for "is this a transfer" — there is deliberately no separate boolean flag, so the two can never disagree with each other.
+- `clearedOn` — the statement month (`"YYYY-MM"`) this transaction was ticked off against in a **Statement Check** (Section 3.19). Empty/absent means "not matched to any bank statement yet". Set and cleared only by the Statement Check panel; an edit that changes the **amount, account or month** clears it (the match no longer holds), any other edit keeps it.
 - `bucket` — like Category (2.1), the Transactions tab shows one ledger at a time via a Personal/Business toggle; a new transaction always takes the bucket of the currently active toggle, not a per-transaction picker.
 - **Bulk move account**: the Transactions tab's multi-select bar has a "Move to Account" action for fixing mis-entered transactions (e.g. logged against Cash instead of a bank account). It changes only `accountId` on the selected transactions — every other field (`type`, `date`, `categoryId`, `amount`, `description`, `bucket`) is left untouched. Because both the source and target account balances are always computed live from `accountId` matches (Section 3.1), moving a transaction automatically and correctly shifts its effect from the old account's balance to the new one — no separate adjustment or reconciliation entry is created or needed. The target-account dropdown is scoped to the currently active ledger (`transactionsLedger`), so a transaction can never be moved into an account belonging to the other bucket. Any reconciliation history (Section 2.5) tied to the *old* account is left as-is — it's a historical log of what was checked at the time, not a live calculation, so moving transactions after the fact does not retroactively change it.
 - **Category filter rollup**: the Transactions tab's Category filter dropdown rolls up like the Budget rollup (Section 3.5) — selecting a *parent* category (e.g. "Transport") shows transactions logged against that parent **and** all its direct subcategories, via `categoryAndChildIds()`. Selecting a *subcategory* directly (e.g. "Transport › Fuel Car") shows only that subcategory's own transactions, since a subcategory has no children of its own (one level of nesting only, Section 2.1).
@@ -97,6 +98,14 @@ Two things about the move that were verified rather than assumed:
 { id, accountId, date, actualBalance, computedBefore, diff }
 ```
 - A historical log entry, written every time you use "Reconcile" on an account — kept even when `diff` is 0 (no adjustment needed), so you have a record of when you last checked.
+
+### 2.5b Statement (Statement Check record)
+```
+{ id, accountId, month: "YYYY-MM", openingBalance, closingBalance, status: "open" | "matched", checkedAt: "YYYY-MM-DD" }
+```
+- One per **account + month**, holding the two figures typed from the bank statement (Section 3.19). Created the first time a balance is typed or an entry is ticked for that month; updated in place afterwards.
+- `status` is `"matched"` only after **Finish** succeeded. Whether a matched month *still* matches is never stored — it is recomputed live every render, so a later edit that breaks it shows up immediately (Section 3.19).
+- Deleting an account deletes its statements, exactly like its reconciliations.
 
 ### 2.5a Log entry
 ```
@@ -565,6 +574,37 @@ logAction(action, detail)  →  appends { id, at, device, action, detail } to db
 
 ---
 
+### 3.19 Statement Check — matching an account to its bank statement, month by month
+
+**Why.** The original Reconcile (3.6) takes one number — the real balance — and books the whole difference as a single "Balance Adjustment". The figures then agree, but the *cause* (a missing entry, a duplicate, a wrong amount, an entry on the wrong account) stays hidden inside the plug. The user found their real Meezan/BAF balances drifting from the app and wanted to find *which entries* were wrong, per account, per month — the way a bank statement is ticked off by hand.
+
+**Flow** (Accounts tab → an account's **Statement Check** button):
+1. Pick a month (‹ › arrows, or the month chips, which show every month from the account's first activity to now with its status). Type the statement's **opening** and **closing** balance.
+2. **Opening check first.** `appOpening = accountBalanceBefore(account, "{month}-01")` (3.1). If the typed opening differs, the cause is in an **earlier month** (or in the account's opening balance), and the panel says so — searching this month for it would be wasted effort.
+3. **Tick** every entry that appears on the statement. Each tick sets `clearedOn = month` on the transaction and saves immediately (so progress survives a reload and syncs to other devices).
+4. The panel shows, live:
+```
+signed(t)   = +amount for income, −amount for expense
+tickedNet   = Σ signed(t)  over this account's entries in the month with clearedOn = month
+untickedNet = Σ signed(t)  over the remaining entries in the month
+unexplained = bankClosing − (bankOpening + tickedNet)
+appClosing  = appOpening + tickedNet + untickedNet        (= accountBalanceBefore(next month))
+```
+   - **Unticked entries** are in the app but not on the statement — wrong account, duplicate, wrong amount, or not yet processed by the bank. Fix them with the normal Edit / Delete / Move to Account.
+   - **A non-zero `unexplained` with everything ticked** means the statement has entries the app does not. **+ Add missing entry** opens the Transactions tab on this account's ledger with the account and a date inside the month pre-selected.
+5. **Finish** is allowed only when the month genuinely matches: opening matches (`|bankOpening − appOpening| < 0.01`), **every** entry in the month is ticked, and `|unexplained| < 0.01` — which together imply `appClosing = bankClosing`. Finish sets `status = "matched"` and logs it.
+6. **Last resort**: *Book the rest as an adjustment* creates the same kind of adjustment as 3.6 (dated the month's last day, `isReconciliation`, same bucket as the account — 4 rule 8), already ticked, for exactly `unexplained`. It exists so a month can be closed when the cause truly cannot be found; it is deliberately the last button, not the first.
+
+**Live status, never stored.** For each statement record: `matched` is shown as **✓ matched** only while the three Finish conditions still hold; a matched month that no longer holds (an entry edited, added or deleted afterwards) shows **⚠ changed since matched**. An open month shows **⚠ {unexplained} to find**; a month with no record shows **— not checked**. The account card shows the last three months' statuses.
+
+**What clears a tick.** Editing a ticked entry's **amount, account, or date into another month** clears its `clearedOn` (the old match is no longer true), and the user is warned before such an edit. Changing only the category or note keeps it. Move to Account clears it on every moved entry. Transfers can be ticked like any entry (each half on its own account).
+
+**Deliberately not logged per tick** — the log is capped at 400 entries (3.17) and a statement can have dozens of lines. Logged instead: Finish (with counts), the adjustment, and saving the statement balances.
+
+**Relation to Reconcile (3.6).** Reconcile is kept unchanged for a quick "just make it match" on cash wallets. Statement Check is the recommended path for bank accounts. Both write their adjustments the same way.
+
+**Out of scope for v1, on purpose:** importing a bank statement file to tick automatically — every bank's export differs and changes without notice; manual ticking works for every bank today.
+
 ## 4. Business Rules / Invariants (must hold at all times)
 
 1. A category with subcategories cannot itself have a `parentId` (Section 2.1).
@@ -586,7 +626,8 @@ Your Google Sheet has one tab per entity. The exact columns, in order, that get 
 |---|---|
 | `Categories` | `id, name, type, color, parentId, order, bucket, excludeFromTotals` |
 | `Accounts` | `id, name, type, openingBalance, openingDate, color, bucket, excludeFromBalance, currency` |
-| `Transactions` | `id, type, date, accountId, categoryId, amount, description, isReconciliation, bucket, transferId, ref, panel, credits` |
+| `Transactions` | `id, type, date, accountId, categoryId, amount, description, isReconciliation, bucket, transferId, ref, panel, credits, clearedOn` |
+| `Statements` | `id, accountId, month, openingBalance, closingBalance, status, checkedAt` (Section 3.19) — three-way merged by `id` like the other lists |
 | `Budgets` | `id, categoryId, month, amount` |
 | `Reconciliations` | `id, accountId, date, actualBalance, computedBefore, diff` |
 | `Logs` | `id, at, device, action, detail` — capped at the newest 400 rows (Section 3.17) |
@@ -710,6 +751,14 @@ When a new field is added to categories, accounts, or transactions (like `parent
 **8.15 Net This Month stat** — add income and expense transactions in the same month, confirm "Net This Month" equals Income − Expense exactly; switch months and confirm it recalculates per month; confirm the Business tab's 4-card stat grid is unaffected (still `repeat(4, 1fr)` on desktop) and its "Net Profit" figure is untouched.
 
 **8.16 Total Balance moved to Accounts** — confirm the Dashboard has exactly 4 stat cards (Income, Expenses, Net This Month, Savings Rate) and no Total Balance card anywhere on it; confirm the Accounts tab's "Your Accounts" card shows "Total Balance (Personal)" matching the sum of personal accounts' `accountCurrentBalance`, and that it excludes any business accounts even though the account list below it shows both; confirm switching Dashboard months does not affect the Accounts tab figure at all (it's not month-scoped); confirm the Business tab's "Total Business Balance" is untouched.
+
+**8.31 Statement Check (Section 3.19)** — the risk is a wrong "matched", so test the refusal paths as hard as the happy path:
+- **Round-trip first (8.7)**: `clearedOn` and every `Statements` column survive write → Sheet → read; an **old Sheet without `clearedOn` or without a `Statements` tab** loads with `clearedOn` empty and no statements, and the next sync creates the tab.
+- Opening mismatch is reported as "earlier month", and Finish is refused.
+- With openings equal: untick one entry → Finish refused, the entry listed as "not on statement"; leave out an entry the bank has → `unexplained` equals exactly its signed amount; tick everything and balance → Finish succeeds, status ✓ matched, log entry written.
+- Edit a ticked entry's **amount** → tick cleared, month shows ⚠ changed since matched. Edit only its **note** → tick kept, still ✓.
+- Move to Account clears ticks on moved entries. The adjustment button books exactly `unexplained`, ticked, in the account's bucket, and the month then finishes.
+- **No balance moves**: every account balance, Dashboard figure and report is byte-identical before and after ticking (ticks are metadata only).
 
 **8.30 Overlapping syncs and Sheet wipes (Section 5.1a)** — run against a fake Sheet with ~1 s latency per request; the race only shows on a slow connection:
 - **The reported case**: with 50 synced transactions and a personal PIN, save 3 new entries ~1.3 s apart. Afterwards the Sheet **and** the device must hold all 53, and `pinHash` must still be in both.
@@ -938,6 +987,11 @@ This mobile layout work applies to the **Cloud** copy first, since that's the on
 ---
 
 ## Change Log
+
+- **2026-10-31 (Statement Check — find *which* entries make a bank balance disagree)** — User's real bank balances no longer matched the app, and the existing Reconcile (3.6) could only plug the difference with one adjustment, hiding the cause. Added a per-account, per-month **Statement Check** (Section 3.19): type the statement's opening/closing balance, tick each entry that is on the statement, and the panel shows the opening mismatch (→ earlier month), entries not on the statement, and the unexplained remainder (→ entries missing from the app). New `clearedOn` field on Transaction and a new `Statements` entity — both added to `SHEET_TABS` **and** `coerceTypesFromSheet` (Section 6), the Statements list added to the three-way merge, and `ensureSheetStructure` now also runs once inside the sync itself so an existing Sheet gains the new tab on any sync path, not only on sign-in.
+  - **Verified** by a 32-check headless-Chrome suite (Section 8.31) against the real code: opening mismatch reported and Finish refused; an unticked entry and a left-out entry each produce exactly their signed amount; Finish succeeds and is logged only when everything holds; note-only edit keeps the tick, amount edit clears it and the month shows *changed since matched*; the adjustment books exactly the remainder, ticked, in the account's bucket, dated the month's last day; Move to Account clears ticks; ticking leaves every balance byte-identical. Sync: an **old Sheet with no `Statements` tab and a 13-column Transactions header** syncs without error (tab created, `clearedOn` column added), `clearedOn` and every statement field survive the round-trip, a blank statement balance comes back as `null` rather than `0`, and a second sync reports nothing to change. The 16-check sync suite from 5.1a still passes in full.
+  - **Phone layout** (10.4a): the account card now has four actions, which pushed the card past a 375px screen. `.account-card-top` and `.account-actions` now wrap, and the panel's table shows the **day** only (the month is in the panel header) with tighter padding — measured at 375px in a sized iframe: page width equal to the viewport, and the table needs no horizontal scroll.
+  - **All devices should reload once** after this goes live (Ctrl+Shift+R on PC, swipe-away-and-reopen on iPhone): a device still running the previous code would rewrite the Transactions tab without the new `clearedOn` column, and the next sync would read that as the ticks having been removed.
 
 - **2026-10-24 (overlapping syncs wiped the ledger and the PIN — data-loss fix)** — User reported entries syncing, then all other data vanishing, the PIN reverting to the built-in 8833, and only three entries left. Root cause reproduced against the live GitHub code, not guessed: two syncs overlapped, the second read the Sheet in the window after the first had cleared it, and the three-way merge treated the empty Sheet as "everything deleted on another device". Fixed with serialized syncs, write-then-clear pushes, a snapshot of exactly what was pushed, a wipe guard and a mass-loss guard, plus Activity Log entries for every sync that removes or pulls in records (Section 5.1a). 16/16 headless checks pass (original: 3/16). **Cloud copy only** — the PC and iPhone copies have no sync layer.
 - **2026-10-24 (deployed and data recovered)** — The fix above was uploaded to GitHub (commit `a55cf6d`); the live `index.html` was confirmed byte-identical to the fixed file. Recovery of the real data, for the record:
